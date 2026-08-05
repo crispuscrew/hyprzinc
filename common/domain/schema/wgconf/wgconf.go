@@ -200,23 +200,18 @@ func parseEndpoint(value string) (Endpoint, error) {
 	return Endpoint{Host: host, Port: port}, nil
 }
 
-// isAddress reports whether text is a bare IPv4 or IPv6 address. Deliberately not
-// net.ParseIP-strict about zones; a zoned address is not a usable endpoint anyway.
+// isAddress reports whether text is a bare IPv4 or IPv6 address, decided by net.ParseIP and
+// nothing else.
+//
+// This is a security boundary, the same one parseCIDRList guards for Address and AllowedIPs.
+// The Endpoint host is interpolated into the tunnel-build script that the netfilter helper
+// runs with CAP_NET_ADMIN in the app's network namespace, BEFORE the nft ruleset closes it.
+// A hand-rolled "looks like an address" test is the wrong tool: the earlier one accepted any
+// colon-bearing string with no slash or space, so "::$(cmd)::" passed as an IPv6 address and
+// reached that script. Whether a downstream tool happens to reject it as well is not the
+// question; the value must be refused here.
 func isAddress(text string) bool {
-	if strings.Contains(text, ":") {
-		return !strings.ContainsAny(text, "/ ") && strings.Count(text, ":") >= 2
-	}
-	parts := strings.Split(text, ".")
-	if len(parts) != 4 {
-		return false
-	}
-	for _, part := range parts {
-		number, err := strconv.Atoi(part)
-		if err != nil || number < 0 || number > 255 || (len(part) > 1 && part[0] == '0') {
-			return false
-		}
-	}
-	return true
+	return net.ParseIP(text) != nil
 }
 
 // splitList reads a comma-separated value into its entries.

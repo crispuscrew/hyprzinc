@@ -89,7 +89,7 @@ func TestIngressWarnings(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			warns := Warnings(withList(tc.list))
-			if len(warns) != 1 || !strings.Contains(warns[0], tc.want) {
+			if !strings.Contains(strings.Join(warns, "\n"), tc.want) {
 				t.Fatalf("want a warning containing %q, got: %v", tc.want, warns)
 			}
 		})
@@ -100,8 +100,12 @@ func TestIngressWarnings(t *testing.T) {
 // allow-all, and it must not produce an ingress-exposure warning.
 func TestEgressEmptyBlacklistWarns(t *testing.T) {
 	warns := Warnings(withList(schema.NetworkList{Blacklist: true}))
-	if len(warns) != 1 || !strings.Contains(warns[0], "egress blacklist") {
+	joined := strings.Join(warns, "\n")
+	if !strings.Contains(joined, "egress blacklist") {
 		t.Fatalf("want an egress allow-all warning, got: %v", warns)
+	}
+	if strings.Contains(joined, "Ingress") {
+		t.Fatalf("an egress list must not warn about inbound exposure, got: %v", warns)
 	}
 }
 

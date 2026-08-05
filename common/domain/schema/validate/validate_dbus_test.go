@@ -110,3 +110,37 @@ func TestDBus_RejectedOnVMApp(t *testing.T) {
 		t.Errorf("DBusMeta on a VM app was accepted or misreported: %q", got)
 	}
 }
+
+// A wildcard grants everything under its base, now and in future. With a two-element base
+// that is a whole vendor namespace, and org.freedesktop.* alone reaches systemd1, whose
+// StartTransientUnit runs an arbitrary command as the user outside the container. The line
+// reads like a modest portal grant, which is exactly why it has to be refused rather than
+// left to a reviewer to notice.
+func TestDBus_VendorWideWildcardRefused(t *testing.T) {
+	for _, name := range []string{"org.freedesktop.*", "org.gnome.*", "com.example.*"} {
+		cfg := dbusApp()
+		cfg.DBusMeta = schema.DBusMeta{Talk: []string{name}}
+		if got := errText(t, cfg); !strings.Contains(got, "entire vendor namespace") {
+			t.Errorf("Talk %q was accepted or misreported: %q", name, got)
+		}
+	}
+	// Deeper wildcards stay allowed: this is a rule about breadth, not about wildcards.
+	cfg := dbusApp()
+	cfg.DBusMeta = schema.DBusMeta{Talk: []string{"org.freedesktop.portal.*"}}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("a three-element wildcard should still be allowed, got: %v", err)
+	}
+}
+
+// A grant that is legal and much wider than it reads should say so at authoring time.
+func TestDBus_BroadGrantsWarn(t *testing.T) {
+	cfg := dbusApp()
+	cfg.DBusMeta = schema.DBusMeta{Talk: []string{"org.freedesktop.systemd1"}}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("a concrete bus name should still validate: %v", err)
+	}
+	warns := Warnings(cfg)
+	if len(warns) == 0 || !strings.Contains(strings.Join(warns, "\n"), "way out of the sandbox") {
+		t.Errorf("talking to systemd1 should warn, got %v", warns)
+	}
+}

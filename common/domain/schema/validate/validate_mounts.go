@@ -19,9 +19,48 @@ func checkVolume(index int, volume schema.Volume, add addFunc) {
 			add("Volumes[%d].HostMount: required when HostMounted=true", index)
 		case hasUnsafe(volume.HostMount) || strings.ContainsAny(volume.HostMount, ":,"):
 			add("Volumes[%d].HostMount %q: must not contain ':', ',', or whitespace (it shifts podman's -v fields)", index, volume.HostMount)
+		default:
+			checkHostSource("Volumes", index, volume.HostMount, add)
 		}
 	}
 	checkSizeLimit("Volumes", index, volume, add)
+}
+
+// brokeredPrefixes are host paths a mount must never name, because Zinc's whole job is to
+// hand the app a filtered stand-in for what lives there. $XDG_RUNTIME_DIR holds the session
+// bus socket, the compositor socket, and the per-app sockets of every OTHER Zinc app; /proc
+// and /sys are host state a sandbox has no business reading wholesale.
+//
+// This is the one place the "an explicit mount is an explicit grant" principle does not
+// apply. A config naming the raw bus reads as an ordinary directory mount, and afterwards
+// every surface Zinc offers still reports the app as having no bus: `zcr where` says
+// bus: none, `zcr bus` shows no row, and the container is still labelled with a Wayland
+// security context it is not using. The grant is invisible in exactly the place a reviewer
+// would look, so it is refused instead of trusted to be noticed.
+var brokeredPrefixes = []string{"/run/user/", "/proc", "/sys"}
+
+// checkHostSource applies the host-path policy shared by every host-side mount source.
+func checkHostSource(list string, index int, source string, add addFunc) {
+	// Absolute only. Podman resolves a relative source against ITS OWN working directory,
+	// which is wherever zcr was invoked from (a hotkey, a menu, a TUI), so the same config
+	// mounts a different directory depending on the caller. Worse, podman reads a source
+	// with no separator at all as the name of a NAMED VOLUME and creates it, so
+	// "HostMount: Downloads" silently becomes a fresh empty volume while the config still
+	// says HostMounted: true. Neither is something a reviewer can see.
+	if !strings.HasPrefix(source, "/") {
+		add("%s[%d].HostMount %q: must be an absolute path - podman resolves a relative source against the directory zcr happened to be started in, and a source with no '/' at all becomes a named volume it creates rather than the host path this names", list, index, source)
+		return
+	}
+	if hasDotDot(source) {
+		add("%s[%d].HostMount %q: must not contain '..' segments - the path that gets mounted should be the path that was reviewed", list, index, source)
+		return
+	}
+	for _, prefix := range brokeredPrefixes {
+		if source == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(source, prefix) {
+			add("%s[%d].HostMount %q: %s holds the sockets Zinc brokers (the session bus, the compositor, and other apps' filtered sockets); mounting it hands the app the unfiltered capability while every Zinc report still says it has none. Ask for the capability instead: DBusMeta for the bus, DisplayMeta for the display", list, index, source, prefix)
+			return
+		}
+	}
 }
 
 // checkConfig: like a Volume but bundle-relative (apps/<name>/configs/) - no absolute
@@ -57,6 +96,15 @@ func checkKeys(keys []schema.Key, add addFunc) {
 			add("Keys[%d].Path: must not be empty", index)
 		case hasUnsafe(keyEntry.Path) || strings.ContainsAny(keyEntry.Path, ":,"):
 			add("Keys[%d].Path %q: must not contain ':', ',', or whitespace (it shifts podman's -v fields)", index, keyEntry.Path)
+		case !strings.HasPrefix(keyEntry.Path, "/"):
+			// A Key promises a narrow thing: this one file, read-only, inside the container
+			// home. "~" is the shell's, not podman's, so it is taken literally.
+			add("Keys[%d].Path %q: must be an absolute path ('~' is not expanded, and a relative path resolves against wherever zcr was started)", index, keyEntry.Path)
+		case hasDotDot(keyEntry.Path):
+			// The mount destination is filepath.Join(home, dir, filepath.Base(Path)), and
+			// Base("/..") is "/", so a trailing ".." collapses the destination onto the
+			// container home itself: "Path: /.." mounts the entire host filesystem over it.
+			add("Keys[%d].Path %q: must not contain '..' segments - the destination is derived from the path's last element, so '..' mounts the source over the container home instead of into it", index, keyEntry.Path)
 		}
 	}
 }
