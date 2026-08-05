@@ -5,6 +5,198 @@ All notable changes to Zinc are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The version line is
 tracked in [RELEASES.md](RELEASES.md).
 
+## [Unreleased]
+
+A second audit, aimed at the places 0.9.1 did not reach: the VM disk chain, the paths that
+load a config without validating it, and the tools around the runner. Two findings share a
+root cause worth stating plainly, because it is the same mistake in two subsystems: a pin
+covers the bytes of a file, and a file can point somewhere else.
+
+### Security
+
+- **A pinned VM base image could hand the guest any file the user can read, or a URL.** A
+  qcow2 header carries a `backing_file` pointer, and those bytes are inside the digest, so a
+  hostile image pins perfectly and forever while the guest boots whatever the pointer
+  resolves to. `qemu-img convert` on the resulting overlay returns the host file's plaintext
+  at offset 0; with the nbd or curl block drivers present, which is the norm, the pointer can
+  be a URL, making the boot disk remote, mutable and unauthenticated. That is verbatim the
+  property `BaseDigest` exists to rule out.
+
+  The fix is the definitional one rather than an attempt to follow the chain: an image that
+  declares a backing file or an external data file is not self-contained, cannot be pinned,
+  and is refused with instructions to flatten it. Raw images have no such header and are
+  unaffected. Checked before the digest is consulted, so it also applies on the cached path.
+
+- **`zcr stop` and `zcr restart` on a config given by path never validated it.** A store app
+  has its name checked against its filename; the path form takes whatever the file claims.
+  `AppNameID` is not a label, it is a container name, a pod name and a path segment inside an
+  `rm -rf`, so `AppNameID: --all` turned the teardown's `podman rm -f --ignore <app>` into
+  `podman rm -f --ignore --all`, removing every container on the host, and `../..` walked
+  that `rm -rf` out of the app's own socket directory and into the session's runtime
+  directory, taking the Wayland sockets, the session bus socket and podman's rootless state.
+  This is the container-side twin of the `zvr reset` path traversal fixed in 0.9.1.
+
+  Every verb that loads a config goes through one function, so it validates there. The
+  socket-directory helper also refuses to return a path outside its own root, since the
+  consumer is an `rm -rf` with the runtime directory bind-mounted read-write.
+
+- **A WireGuard `Endpoint` could carry shell metacharacters into the privileged helper.**
+  `Address` and `AllowedIPs` were fixed in 0.9.1 by parsing them; `Endpoint` kept a
+  hand-rolled "looks like an address" test that accepted any colon-bearing string without a
+  slash or a space, so `[::$(cmd)::]:51820` parsed as an IPv6 address and was interpolated
+  unquoted into the tunnel script the netfilter helper runs with `CAP_NET_ADMIN` before the
+  nft ruleset closes the namespace. It now goes through `net.ParseIP`, like its siblings.
+
+  Exploitation was probably blocked downstream by `wg setconf` rejecting the same string
+  first. That is an accident of a tool's behaviour, not a check, and the boundary is here.
+
+- **`Talk: ["org.freedesktop.*"]` was accepted, unwarned.** A wildcard grants its whole
+  subtree, including services that appear there later, and that subtree contains
+  `org.freedesktop.systemd1`, whose `StartTransientUnit` runs an arbitrary command as the
+  user outside the container. One tidy-looking line and the sandbox is gone. A wildcard must
+  now name at least three elements before the `*`, so a vendor namespace cannot be granted
+  whole. Deeper wildcards are unaffected. `zc` additionally warns when a grant names a
+  service whose advertised purpose is to run code, or claims a name the desktop's own
+  service normally owns.
+
+- **A config could mount the raw session bus and the raw compositor socket.** Mount
+  validation screened for field-shifting characters and had no host-path policy at all, so a
+  volume naming `/run/user/1000` handed the app both unfiltered, while `DBusMeta` stayed
+  empty and every Zinc surface agreed with it: `zcr where` said `bus: none`, `zcr bus` showed
+  no row, and the container still carried the `zinc.wayland=security-context` label for a
+  context it was ignoring. The grant was invisible in exactly the place a reviewer looks.
+  Mount sources under the runtime directory, `/proc` and `/sys` are refused, and the app is
+  told to ask for the capability instead.
+
+- **`zvr install` validated nothing.** The comma-injection class fixed in 0.9.1 for configs
+  was still open on the one path that boots from the medium: `--media` and `--disk` went
+  straight into `-drive`, where a second `file=` in the tail replaces the path, and the
+  basename also lands in the QMP and serial socket options. Both are now screened, and
+  `--firmware`, `--devices` and `--secure-boot` are checked against their enums instead of
+  being silently reinterpreted as BIOS-with-virtio.
+
+- **An unverified UEFI variable store could decide what Secure Boot enforced.** The store
+  beside a base image is adopted on first run, which is what carries a Windows install's boot
+  entry across, and nothing pinned it. With `SecureBoot: true` the app got the secure-boot
+  firmware over an attacker-chosen PK/KEK/db. The benign version needed no attacker at all:
+  install without `--secure-boot`, author the app with `SecureBoot: true`, and the guest
+  boots in setup mode while the config says otherwise. Adoption is now refused when
+  `SecureBoot` is set, and the build-shape check runs on the seeding path too.
+
+- **Host mount and key paths must be absolute.** Podman resolves a relative source against
+  its own working directory, which is wherever `zcr` was started, and reads a source with no
+  separator as a named volume it creates. Either way the config named one thing and mounted
+  another. A `Keys` path additionally could not contain `..`: the destination is built from
+  the path's last element, so `Path: /..` mounted the host filesystem over the container home.
+
+- **`ImageMeta.Image` only had to end in something digest-shaped.** The pattern was anchored
+  at the tail, so `-v/:/host@sha256:<64 hex>` validated as a pinned image and reached podman
+  in the one argv slot that is a bare positional. It is anchored at both ends now.
+
+- **`ZINC_NETFILTER_IMAGE` was passed through unchecked**, which made the most privileged
+  image Zinc runs the one reference held to a weaker standard than an app's own image. It
+  must now be a `localhost/` reference or a digest pin. The default is also fully qualified
+  as `localhost/zinc/netfilter:local`, so it satisfies the rule the validator applies to
+  everything else.
+
+- **`zvr stop` could signal an unrelated process.** The swtpm check matched "swtpm" anywhere
+  in a recycled pid's command line, which an editor, a grep or a build log satisfies. It
+  compares argv elements now, which is the rule its own comment already claimed and which the
+  supervisor adopted in 0.9.1.
+
+- **`make virgl-venus` built from a mutable tag.** The venus-capable virglrenderer that guest
+  Vulkan needs was cloned by tag and built by running upstream's own scripts on the host, and
+  the result is a library qemu loads with its seccomp sandbox already disabled for Vulkan.
+  `zvr` printed the raw clone-and-build sequence as the fix when the library was missing, so
+  it was a command users were told to run. The commit is pinned and checked, and the hint now
+  points at the make target rather than reproducing the unpinned form.
+
+### Fixed
+
+- **`Autorestart` produced an argv podman refuses.** `--rm` and `--restart` conflict, and
+  podman rejects the pair at the CLI layer, so nothing was created. The launch was detached
+  with no stdio and `zcr` had already exited, so it reported success while the app never
+  started and the pod, ruleset, proxy and display holder were all left behind. A compose file
+  with `restart: always` imports straight to this.
+
+- **The Wayland holder never let go of a container that runs without `--rm`.** It waited for
+  the container to be removed, which for a `KeepAlive` or `Autorestart` app never happens, so
+  it span every 250ms for the rest of the session and the security context was never revoked.
+  It now asks whether the container is running again, with a restart window, rather than
+  whether it still exists.
+
+- **`zc tui` acted on the name a config claimed rather than the file it came from.** A row
+  that fails to resolve is still listed so it can be repaired, and it carried an unchecked
+  `AppNameID`. A dropped `notes.yaml` saying `AppNameID: firefox` therefore made delete
+  remove the real, reviewed `firefox.yaml` while reporting success and leaving the hostile
+  file in place; run, stop and logs were aimed the same way. Every action uses the store key
+  now, and the list displays it.
+
+- **`zc` had none of the exec-boundary guards the launcher has.** The launcher filters its
+  list to the schema's name charset and refuses a flag-shaped or `.yaml`-suffixed name before
+  running it, with tests for each; `zc` drives the same runner from the same kind of list and
+  had neither, so a dropped `--net=host.yaml` became a runnable row and `notes.yaml.yaml`
+  listed as `notes.yaml`, which `zcr` re-reads as a path relative to wherever `zc` was
+  started. Both guards now exist on both sides.
+
+- **The app list could be rewritten by a config.** Fields are painted unescaped and the
+  renderer splits on newlines, so an embedded newline in `ImageMeta.Image` added a fabricated
+  row and a cursor-movement escape repainted the row above, letting one app's line describe
+  another. Validation would reject both, but validation runs at save and at launch, never on
+  the display path, so a file that is never runnable could still rewrite what a reviewer
+  reads. Control characters are stripped and the fields are bounded.
+
+- **The bus socket directory was 0700 only at its leaf.** `mkdir -m 700 -p a/b/c` leaves the
+  parents at the image's umask, so the claim that the directory is 0700 was true of one level.
+
+- **`safeName` in the creator refused a legal app name.** It tested for `..` as a substring,
+  so `my..app` (which the validator accepts) could be created and then never deleted, edited
+  or validated again. It compares path segments now, matching the launcher's version.
+
+### Changed
+
+- **The GPU default is documented honestly.** `/dev/dri` is granted unless a config sets
+  `DisplayMeta.DisableGpuAccess`, and the architecture doc said twice that GPU access was off
+  by default. It is the one grant in the schema whose zero value is the permissive one, so a
+  reviewer scanning a config for what it was given does not see it. The doc now states what
+  the code does, and `zc` warns whenever it is left on. Making the field opt-in changes the
+  meaning of every existing config and so belongs to a `SchemaVersion` bump, not a patch.
+
+- **The virtio-win driver ISO no longer claims to be verified.** The check extracted two
+  files and confirmed they began with `MZ`, which is a corruption check, and then printed
+  "verified". The ISO comes from a floating "stable-virtio" path with no digest, so the
+  output now says which of the two it did, and prints the observed digest with the line to
+  add to pin it.
+
+### Still open
+
+- The D-Bus proxy, the pod, its netns, the egress bridge and any published host port are not
+  torn down when an app exits on its own. The reaping goroutine that was meant to cover this
+  cannot run in the shipped product: every front-end launches through a short-lived `zcr`,
+  which exits moments after forking the app, and a clean exit was never covered by it at all.
+  Because `pod create` has no `--replace`, the leaked pod also makes the next launch of a
+  filtered app fail. Fixing it properly means a supervisor that outlives the app, which is a
+  design decision rather than a patch: the Wayland holder is already exactly that shape and
+  already knows when the app is gone, so extending it is the obvious candidate.
+- The already-running refusal reads `podman ps` at the top of the launch, but the app
+  container does not appear there until the end, so a second launch a second later still
+  passes the check and its fail-closed teardown removes the first launch's pod and proxy.
+  There is no lock in the launch path.
+- `zcr net` reports posture from the config file as it reads at report time, without probing
+  the running system, so editing a YAML changes what the attestation surface says about an
+  app that is already running.
+- A config run from a file path can claim an `AppNameID` that resolves to another app's
+  address, forging that app's Wayland `app_id`, container name, bus attribution row and
+  `zcr net` posture.
+- Every guest reaches host services bound to 127.0.0.1 through user-mode networking's
+  gateway. No config field constrains it, and the network model is documented only in the
+  inbound direction.
+- `flake.lock` is not committed, so the second build path has no recorded input hashes.
+- Release tags are unsigned and there are no published checksums, so a user who clones has
+  nothing to verify.
+- The multiterminal launch does its enforcement in a detached process with stdio discarded,
+  so a failed ruleset load or a rejected security context is reported as a successful launch.
+
 ## [0.9.1] - 2026-07-31
 
 A whole-repo audit, every finding verified against a running system rather than by
