@@ -323,3 +323,61 @@ func TestLoadResolved_RefusesToTakeTheBasesIdentity(t *testing.T) {
 		t.Errorf("it should still inherit everything else, got Image=%q", cfg.ImageMeta.Image)
 	}
 }
+
+// A file dropped into the apps directory should not become a runnable row just by being
+// there. Anything outside the schema's name charset is skipped, so a flag-shaped or
+// path-shaped filename never reaches the runner.
+func TestListSkipsNamesOutsideTheSchemaCharset(t *testing.T) {
+	dir := t.TempDir()
+	for _, filename := range []string{
+		"notes.yaml",      // a normal app
+		"--net=host.yaml", // would land in zcr's flag slot
+		"Firefox.yaml",    // uppercase is not a legal app name
+		".hidden.yaml",    // must start alphanumeric
+	} {
+		if err := os.WriteFile(filepath.Join(dir, filename), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sto := &Store{Root: dir}
+	names, err := sto.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "notes" {
+		t.Fatalf("List() = %v, want only [notes]", names)
+	}
+}
+
+// A dot is legal in an app name, so "notes.yaml.yaml" does list as the key "notes.yaml":
+// the charset cannot tell that one apart from a real app. It is refused one layer later, at
+// the exec boundary, because that is where the ".yaml" suffix actually means something (zcr
+// reads such an argument as a path). Recorded here so the split is deliberate rather than an
+// oversight in whichever layer someone reads first.
+func TestListKeepsDottedNamesForTheExecBoundaryToRefuse(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.yaml.yaml"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sto := &Store{Root: dir}
+	names, err := sto.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "notes.yaml" {
+		t.Fatalf("List() = %v, want [notes.yaml]", names)
+	}
+}
+
+// "my..app" is a legal schema name that contains "..", so a substring test refused a name
+// the validator accepts, leaving an app zc could create and then never touch again.
+func TestSafeNameAllowsDotsButRefusesTraversal(t *testing.T) {
+	if err := safeName("my..app"); err != nil {
+		t.Errorf("my..app is a legal app name, got: %v", err)
+	}
+	for _, name := range []string{"..", ".", "../evil", "a/b"} {
+		if err := safeName(name); err == nil {
+			t.Errorf("safeName(%q) accepted a name that escapes the store", name)
+		}
+	}
+}

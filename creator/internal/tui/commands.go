@@ -176,7 +176,7 @@ func loadApps(svc backend.Service) tea.Cmd {
 		for _, name := range names {
 			raw, err := svc.Load(name)
 			if err != nil {
-				rows = append(rows, appRow{cfg: schema.AppConfig{AppNameID: name}, loadErr: err})
+				rows = append(rows, appRow{name: name, cfg: schema.AppConfig{AppNameID: name}, loadErr: err})
 				continue
 			}
 			// Resolved for the row, raw for the form. A broken inheritance (a base that was
@@ -184,10 +184,10 @@ func loadApps(svc backend.Service) tea.Cmd {
 			// rather than vanishing from the only UI that could repair it.
 			cfg, rerr := svc.LoadResolved(name)
 			if rerr != nil {
-				rows = append(rows, appRow{cfg: raw, raw: raw, running: running[name], loadErr: rerr})
+				rows = append(rows, appRow{name: name, cfg: raw, raw: raw, running: running[name], loadErr: rerr})
 				continue
 			}
-			rows = append(rows, appRow{cfg: cfg, raw: raw, running: running[name]})
+			rows = append(rows, appRow{name: name, cfg: cfg, raw: raw, running: running[name]})
 		}
 		return appsMsg{rows}
 	}

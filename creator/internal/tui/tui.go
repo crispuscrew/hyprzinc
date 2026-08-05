@@ -36,11 +36,20 @@ const (
 )
 
 // appRow carries an app twice on purpose. cfg is the RESOLVED config - what the app
-// actually is - and drives everything the list shows and every action it offers, so an app
-// that inherits its image or its network is not listed as though it had neither. raw is the
-// file as written, and is what the edit form opens: a form that loaded the resolved config
-// would write the base's values back into the child as if the child had stated them.
+// actually is - and drives everything the list shows, so an app that inherits its image or
+// its network is not listed as though it had neither. raw is the file as written, and is
+// what the edit form opens: a form that loaded the resolved config would write the base's
+// values back into the child as if the child had stated them.
+//
+// name is the STORE KEY (the filename without .yaml), and it is what every ACTION uses. The
+// config's own AppNameID is only what the file claims to be:
+// LoadResolved refuses a mismatch, but a row that failed to resolve is still listed so it
+// can be repaired, and such a row carries the raw config with an unchecked AppNameID. Acting
+// on that would mean a dropped "notes.yaml" claiming `AppNameID: firefox` sends delete, run
+// and stop at the real firefox instead - deleting a reviewed app while reporting success and
+// leaving the hostile file in place.
 type appRow struct {
+	name    string
 	cfg     schema.AppConfig
 	raw     schema.AppConfig
 	running bool
@@ -263,46 +272,46 @@ func (mdl Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case keys.Run:
 		if row, ok := mdl.selected(); ok {
-			mdl.status = "launching " + row.cfg.AppNameID + "..."
-			return mdl, launch(mdl.svc, row.cfg.AppNameID)
+			mdl.status = "launching " + row.name + "..."
+			return mdl, launch(mdl.svc, row.name)
 		}
 	case keys.Shell:
 		if row, ok := mdl.selected(); ok {
 			if !row.cfg.StartConditions.Multiterminal {
-				mdl.status = row.cfg.AppNameID + ": a shell needs a multiterminal app"
+				mdl.status = row.name + ": a shell needs a multiterminal app"
 				return mdl, nil
 			}
-			mdl.status = "opening shell for " + row.cfg.AppNameID + "..."
-			return mdl, openShell(mdl.svc, row.cfg.AppNameID)
+			mdl.status = "opening shell for " + row.name + "..."
+			return mdl, openShell(mdl.svc, row.name)
 		}
 	case keys.Build:
 		if row, ok := mdl.selected(); ok {
 			if len(row.cfg.ImageMeta.Install) == 0 {
-				mdl.status = row.cfg.AppNameID + ": no install lines - nothing to build"
+				mdl.status = row.name + ": no install lines - nothing to build"
 				return mdl, nil
 			}
-			mdl.status = "building image for " + row.cfg.AppNameID + "..."
-			return mdl, buildImage(mdl.svc, row.cfg.AppNameID)
+			mdl.status = "building image for " + row.name + "..."
+			return mdl, buildImage(mdl.svc, row.name)
 		}
 	case keys.Stop:
 		if row, ok := mdl.selected(); ok {
-			return mdl, stop(mdl.svc, row.cfg.AppNameID)
+			return mdl, stop(mdl.svc, row.name)
 		}
 	case keys.Logs:
 		if row, ok := mdl.selected(); ok {
-			return mdl, fetchLogs(mdl.svc, row.cfg.AppNameID)
+			return mdl, fetchLogs(mdl.svc, row.name)
 		}
 	case keys.Rename:
 		if row, ok := mdl.selected(); ok && row.loadErr == nil {
-			inp := newInput(row.cfg.AppNameID, "")
+			inp := newInput(row.name, "")
 			cmd := inp.Focus()
-			mdl.rename, mdl.renameFrom = inp, row.cfg.AppNameID
+			mdl.rename, mdl.renameFrom = inp, row.name
 			mdl.mode, mdl.status = modeRename, ""
 			return mdl, cmd
 		}
 	case keys.Delete:
 		if row, ok := mdl.selected(); ok {
-			mdl.confirmName = row.cfg.AppNameID
+			mdl.confirmName = row.name
 			mdl.mode = modeConfirmDelete
 		}
 	case keys.Keys:

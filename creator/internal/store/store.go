@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -90,12 +91,29 @@ func (sto *Store) Path(name string) string {
 	return filepath.Join(sto.Root, name+".yaml")
 }
 
+// keyRE is the app-name charset the schema enforces (lowercase [a-z0-9._-], starting
+// alphanumeric). A file zc wrote always matches it. List skips anything that does not, so a
+// hand-dropped or shared file with a flag-like name ("--net=host.yaml") or a path-like one
+// ("notes.yaml.yaml", listed as "notes.yaml", which zcr re-reads as ./notes.yaml) never
+// becomes a row that can be run. The launcher has had this guard since it shipped; the
+// authoring tool drives the same runner and needs the same one.
+var keyRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+
 // safeName rejects a name that is not a plain store key - one with a path separator
 // or a ".." segment - so a crafted name (a CLI delete argument, an unvalidated
 // dependency) cannot escape the apps directory when joined into Path.
+//
+// The ".." test compares SEGMENTS rather than searching the string: "my..app" is a legal
+// schema name and contains "..", so a substring test refuses a name the validator accepts,
+// leaving an app that zc can create and then never delete, edit or validate again.
 func safeName(name string) error {
-	if name == "" || name != filepath.Base(name) || strings.Contains(name, "..") {
+	if name == "" || name != filepath.Base(name) {
 		return fmt.Errorf("store: invalid app name %q", name)
+	}
+	for _, segment := range strings.Split(name, string(filepath.Separator)) {
+		if segment == ".." || segment == "." {
+			return fmt.Errorf("store: invalid app name %q", name)
+		}
 	}
 	return nil
 }
@@ -115,7 +133,7 @@ func (sto *Store) List() ([]string, error) {
 		if entry.IsDir() {
 			continue
 		}
-		if name, ok := strings.CutSuffix(entry.Name(), ".yaml"); ok {
+		if name, ok := strings.CutSuffix(entry.Name(), ".yaml"); ok && keyRE.MatchString(name) {
 			names = append(names, name)
 		}
 	}
