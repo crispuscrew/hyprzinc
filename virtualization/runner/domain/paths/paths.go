@@ -120,12 +120,13 @@ func (paths Paths) VenusEnv() ([]string, error) {
 			return nil, fmt.Errorf(
 				"guest Vulkan needs a virglrenderer built with venus support, which was not found at %s\n"+
 					"  missing: %s\n"+
-					"Distributions ship virglrenderer without venus. Build one:\n"+
-					"  git clone --depth 1 --branch virglrenderer-1.3.0 https://gitlab.freedesktop.org/virgl/virglrenderer.git\n"+
-					"  cd virglrenderer && meson setup build --prefix=%s -Dvenus=true -Dbuildtype=release\n"+
-					"  ninja -C build && ninja -C build install\n"+
+					"Distributions ship virglrenderer without venus. Build one with:\n"+
+					"  make -C virtualization/runner virgl-venus\n"+
+					"which is the same build against a PINNED commit. Doing it by hand from the tag\n"+
+					"alone runs whatever that mutable ref points at today, and the result is a library\n"+
+					"qemu loads with its seccomp sandbox already disabled for Vulkan.\n"+
 					"Or set ZVR_VIRGL_PREFIX to an existing one, or turn VirtualizationMeta.Vulkan off.",
-				prefix, required, prefix)
+				prefix, required)
 		}
 	}
 	return []string{

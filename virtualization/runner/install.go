@@ -50,6 +50,31 @@ func (list *mediaList) Set(value string) error {
 	return nil
 }
 
+// checkQemuPath screens a path that becomes a qemu -drive property.
+//
+// `zvr install` builds its config by hand and never calls validate.Validate, so the rules
+// the validator applies to VirtualizationMeta.Image and InstallMedia do not reach these
+// flags. That gap matters more here than in a config, not less: install is the one path that
+// BOOTS from the medium, and it writes to --disk directly.
+//
+// A comma is the whole problem. qemu separates -drive properties with commas and resolves a
+// duplicate key to the LAST one, so a path containing ",file=/elsewhere" does not stay a
+// path: it appends a second file= that replaces the one just approved. A directory named
+// "Win11.iso,file=/home/u/.ssh" inside an unpacked "install kit" is enough, since the Stat
+// above succeeds on the literal string. The basename also lands in the QMP and serial socket
+// paths, where the tail after a comma is parsed as chardev options.
+func checkQemuPath(flagName, path string) error {
+	switch {
+	case strings.ContainsAny(path, ",:"):
+		return fmt.Errorf("%s %q: must not contain ',' or ':' - qemu separates -drive properties with commas and resolves a duplicate key to the last one, so those characters append options to the drive rather than staying in the path", flagName, path)
+	case strings.ContainsAny(path, " \t\n\r"), strings.IndexFunc(path, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0:
+		return fmt.Errorf("%s %q: must be a single-line path with no whitespace or control characters", flagName, path)
+	case strings.Contains(path, ".."):
+		return fmt.Errorf("%s %q: must not contain a '..' segment - the path that gets opened should be the path that was typed", flagName, path)
+	}
+	return nil
+}
+
 func cmdInstall(argv []string) error {
 	fset := flag.NewFlagSet("install", flag.ContinueOnError)
 	disk := fset.String("disk", "", "the disk to install onto; created if missing")
@@ -89,13 +114,45 @@ func cmdInstall(argv []string) error {
 		}
 	}
 
+	// The enums are read straight into the config below, and an unrecognised value is not an
+	// error anywhere downstream: firmware.Prepare treats anything that is not UEFI as "no
+	// firmware", and the machine builder treats anything that is not Compatible as virtio.
+	// So `--firmware uefi --secure-boot` (lowercase, the natural typing) would produce a
+	// SeaBIOS machine with no Secure Boot, while still emitting the smm and pflash options
+	// that make the command line look like Secure Boot. In a config these are hard errors;
+	// they have to be hard errors here too, for the same reason --resolution is checked
+	// above: a flag that looks accepted and changes nothing is the trap this project
+	// refuses elsewhere.
+	switch schema.VMFirmware(*firmwareKind) {
+	case schema.VMFirmwareBIOS, schema.VMFirmwareUEFI:
+	default:
+		return fmt.Errorf("--firmware %q: must be %s or %s (the value is case-sensitive)",
+			*firmwareKind, schema.VMFirmwareBIOS, schema.VMFirmwareUEFI)
+	}
+	switch schema.VMDevices(*devices) {
+	case schema.VMDevicesVirtio, schema.VMDevicesCompatible:
+	default:
+		return fmt.Errorf("--devices %q: must be %s or %s (the value is case-sensitive)",
+			*devices, schema.VMDevicesVirtio, schema.VMDevicesCompatible)
+	}
+	if *secureBoot && schema.VMFirmware(*firmwareKind) != schema.VMFirmwareUEFI {
+		return fmt.Errorf("--secure-boot needs --firmware %s: Secure Boot is a property of the UEFI variable store, and a BIOS machine has none",
+			schema.VMFirmwareUEFI)
+	}
+
 	diskPath, err := filepath.Abs(*disk)
 	if err != nil {
+		return err
+	}
+	if err := checkQemuPath("--disk", diskPath); err != nil {
 		return err
 	}
 	for index, path := range media {
 		absolute, err := filepath.Abs(path)
 		if err != nil {
+			return err
+		}
+		if err := checkQemuPath("--media", absolute); err != nil {
 			return err
 		}
 		if _, err := os.Stat(absolute); err != nil {

@@ -5,7 +5,9 @@
 package disk
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -73,6 +75,12 @@ func VerifyBase(base, digest string) error {
 		return fmt.Errorf("base image %s: not a regular file", base)
 	}
 
+	// Before the digest is even consulted: a base that references another file cannot be
+	// pinned, because the digest covers the reference and not what it resolves to.
+	if err := checkSelfContained(base); err != nil {
+		return err
+	}
+
 	current := identify(info)
 	if cached, ok := readSidecar(base); ok && cached.Digest == digest && cached.Identity == current {
 		return nil
@@ -87,6 +95,65 @@ func VerifyBase(base, digest string) error {
 			base, digest, sum)
 	}
 	writeSidecar(base, sidecar{Identity: current, Digest: sum})
+	return nil
+}
+
+// qcow2 header fields this cares about, by byte offset. The layout is fixed and public:
+// magic, then the version, then the offset and length of the backing-file name, and for a
+// version 3 image a feature bitmap whose bit 1 means "the data lives in a separate file".
+const (
+	qcowMagicLen        = 4
+	qcowBackingOffsetAt = 8
+	qcowIncompatibleAt  = 72
+	qcowHeaderProbe     = 80
+	qcowExternalDataBit = 1 << 1
+)
+
+var qcowMagic = []byte{'Q', 'F', 'I', 0xfb}
+
+// checkSelfContained refuses a base image that names another file inside its own header.
+//
+// A pin is a promise that what the guest boots is the bytes that were authorised. A qcow2
+// header can carry a backing-file pointer or an external-data-file pointer, and those bytes
+// are part of what the digest covers, so a hostile image pins perfectly and still serves
+// whatever the pointer resolves to: any file the user can read, or, since the nbd and curl
+// block drivers are usually compiled in, a URL. That makes the boot disk remote, mutable and
+// unauthenticated, which is the exact property BaseDigest exists to rule out.
+//
+// So the rule is the definitional one rather than an attempt to follow the chain: an image
+// that is not self-contained cannot be pinned, and is refused. Anything that is not qcow2
+// (a raw image) has no such header and passes.
+func checkSelfContained(base string) error {
+	file, err := os.Open(base)
+	if err != nil {
+		return fmt.Errorf("base image %s: %w", base, err)
+	}
+	defer file.Close()
+
+	header := make([]byte, qcowHeaderProbe)
+	read, err := io.ReadFull(file, header)
+	if err != nil && read < qcowHeaderProbe {
+		// Too short to be a qcow2 header at all, so there is nothing here to reference.
+		return nil
+	}
+	if !bytes.Equal(header[:qcowMagicLen], qcowMagic) {
+		return nil // raw, or some other format with no backing concept
+	}
+
+	refuse := func(what string) error {
+		return fmt.Errorf("base image %s declares %s, so it cannot be pinned\n"+
+			"BaseDigest covers this file's bytes, and those bytes only point at the real data; "+
+			"the pin would keep matching while the guest booted something else.\n"+
+			"flatten it first: qemu-img convert -O qcow2 %s <flattened.qcow2>, then re-pin",
+			base, what, base)
+	}
+	if binary.BigEndian.Uint64(header[qcowBackingOffsetAt:]) != 0 {
+		return refuse("a backing file")
+	}
+	if binary.BigEndian.Uint32(header[qcowMagicLen:]) >= 3 &&
+		binary.BigEndian.Uint64(header[qcowIncompatibleAt:])&qcowExternalDataBit != 0 {
+		return refuse("an external data file")
+	}
 	return nil
 }
 

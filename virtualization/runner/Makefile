@@ -179,12 +179,37 @@ virtio-win:
 		&& mv "$(VIRTIO_WIN).part" "$(VIRTIO_WIN)"
 	@$(MAKE) --no-print-directory check-virtio-win
 
-## check-virtio-win: verify the driver ISO is readable and its drivers are intact
-# Readability alone is not enough. An interrupted-and-resumed transfer can corrupt the
-# middle of the file while leaving the ISO metadata perfectly readable, so this extracts
-# two drivers Windows would actually load and checks they are real Windows binaries.
+## check-virtio-win: verify the driver ISO against its pin, and check its drivers are intact
+# Two different checks, and it is worth being clear which is which.
+#
+# The pin is the security one. VIRTIO_URL is a floating "stable-virtio" path, so anyone who
+# can serve it substitutes the ISO that gets mounted into a Windows guest, whose zinc-setup.cmd
+# then installs drivers from it. VIRTIO_DIGEST is EMPTY by default because this project does
+# not vendor a hash it has not verified against the publisher; set it once from the value
+# printed below and the check becomes real. Contrast FEDORA_DIGEST above, which is pinned.
+#
+# The structural checks are the corruption one. An interrupted-and-resumed transfer can corrupt
+# the middle of the file while leaving the ISO metadata perfectly readable, so this extracts two
+# drivers Windows would actually load and checks they are real Windows binaries. That says
+# nothing about provenance, and the output no longer claims it does.
+VIRTIO_DIGEST ?=
+
 check-virtio-win:
 	@test -f "$(VIRTIO_WIN)" || { echo "no driver ISO at $(VIRTIO_WIN)"; exit 1; }
+	@got="sha256:$$(sha256sum "$(VIRTIO_WIN)" | cut -d' ' -f1)"; \
+	if [ -n "$(VIRTIO_DIGEST)" ]; then \
+		if [ "$$got" != "$(VIRTIO_DIGEST)" ]; then \
+			echo "the driver ISO does not match its pin:"; \
+			echo "  authorised: $(VIRTIO_DIGEST)"; \
+			echo "  on disk:    $$got"; exit 1; \
+		fi; \
+		echo "driver ISO matches its pinned digest"; \
+	else \
+		echo "note: this driver ISO is NOT pinned. $(VIRTIO_URL) is a floating path,"; \
+		echo "      so nothing here proves it is the one the publisher intended."; \
+		echo "      to pin it, check this against virtio-win's published checksum and set:"; \
+		echo "        VIRTIO_DIGEST := $$got"; \
+	fi
 	@xorriso -indev "$(VIRTIO_WIN)" -toc >/dev/null 2>&1 || { echo "not readable as an image"; exit 1; }
 	@tmp="$$(mktemp -d)"; trap 'chmod -R u+w "$$tmp" 2>/dev/null; rm -rf "$$tmp"' EXIT; \
 	for drv in /viostor/w11/amd64/viostor.sys /NetKVM/w11/amd64/netkvm.sys; do \
@@ -193,13 +218,24 @@ check-virtio-win:
 			echo "$$drv is not a Windows binary - the image is corrupt"; exit 1; }; \
 		chmod u+w "$$tmp/d.sys" 2>/dev/null; rm -f "$$tmp/d.sys"; \
 	done
-	@echo "driver ISO verified: readable, and its drivers are real Windows binaries"
+	@echo "driver ISO is readable and its drivers are intact (this is a corruption check, not provenance)"
 
 ## virgl-venus: build the venus-capable virglrenderer that guest Vulkan needs
 # Distributions ship virglrenderer built WITHOUT venus (Fedora 43's has no venus symbols at
 # all), so an app with Vulkan: true needs one built here. It installs into the user's own
 # data directory and never touches the system copy, so nothing else on the machine changes.
 VIRGL_VERSION ?= 1.3.0
+# The commit virglrenderer-1.3.0 pointed at when this was pinned. A TAG IS A MUTABLE REF:
+# whoever controls the upstream repository (or a TLS middlebox on the way to it) can move it,
+# and this target then runs that repository's own meson and ninja scripts on the host, as the
+# user. What it produces is a library qemu dlopens - and for a Vulkan app qemu runs with its
+# seccomp sandbox disabled, so there is no second boundary behind it. zvr prints this exact
+# command as the fix when a Vulkan app cannot find the library (domain/paths/paths.go), so it
+# is a command users are actively told to run. Pin the commit and check it.
+#
+# To move to a new release: git ls-remote --tags <url>, take the '^{}' (peeled) hash of the
+# tag, and update both lines together.
+VIRGL_COMMIT  ?= ca50e008863837e094747a69974dde3ae148aeaa
 VIRGL_PREFIX  ?= $(HOME)/.local/share/zinc/virgl-venus
 VIRGL_SRC     ?= $(HOME)/.cache/zinc/virglrenderer
 
@@ -212,6 +248,15 @@ virgl-venus:
 		mkdir -p "$$(dirname "$(VIRGL_SRC)")"; \
 		git clone --depth 1 --branch virglrenderer-$(VIRGL_VERSION) \
 			https://gitlab.freedesktop.org/virgl/virglrenderer.git "$(VIRGL_SRC)"; \
+	fi
+	@got="$$(git -C "$(VIRGL_SRC)" rev-parse HEAD)"; \
+	if [ "$$got" != "$(VIRGL_COMMIT)" ]; then \
+		echo "virglrenderer is not the pinned commit:"; \
+		echo "  authorised: $(VIRGL_COMMIT)"; \
+		echo "  checked out: $$got"; \
+		echo "the tag moved, or $(VIRGL_SRC) is a stale checkout of another version."; \
+		echo "delete $(VIRGL_SRC) and retry; if it still differs, the upstream tag was rewritten."; \
+		exit 1; \
 	fi
 	@cd "$(VIRGL_SRC)" && rm -rf build && \
 		meson setup build --prefix="$(VIRGL_PREFIX)" -Dvenus=true -Dbuildtype=release >/dev/null && \

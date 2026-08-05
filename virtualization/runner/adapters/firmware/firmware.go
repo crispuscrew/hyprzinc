@@ -107,6 +107,30 @@ func Prepare(virt schema.VirtualizationMeta, varsPath, baseImage string) (qemu.F
 			return qemu.Firmware{}, err
 		}
 		if installed := InstalledVars(baseImage); installed != "" && installed != varsPath {
+			// Adopting the store that sits beside the base image is what carries a Windows
+			// install's boot entry across into the app. It is also the one input here that
+			// nothing pins: BaseDigest covers the disk, not this file, and the pair is
+			// exactly what `zvr install` produces, so shipping both together is the expected
+			// shape of a bundle. Check what can be checked before adopting it.
+			if err := matchesBuild(installed, build.vars); err != nil {
+				return qemu.Firmware{}, fmt.Errorf("the variable store beside %s cannot be used: %w", baseImage, err)
+			}
+			if virt.SecureBoot {
+				// A store carries PK, KEK and db, which together ARE the Secure Boot policy.
+				// Adopting an unverified one and then booting the secboot firmware over it
+				// means the config says Secure Boot while the guest enforces whatever that
+				// file says, including nothing at all if it has no PK (setup mode). The
+				// benign version needs no attacker: install without --secure-boot, author the
+				// app with SecureBoot: true, and this is what happens. Refuse rather than
+				// report a Secure Boot state that is not the one being enforced.
+				return qemu.Firmware{}, fmt.Errorf(
+					"SecureBoot is set, but the variable store beside %s would be adopted as this app's firmware state.\n"+
+						"that file holds PK/KEK/db, so it decides what Secure Boot actually enforces, and nothing pins it "+
+						"the way BaseDigest pins the disk.\n"+
+						"either clear SecureBoot, or delete %s so the app starts from this host's own secure-boot template "+
+						"(a guest installed against the other store has to be reinstalled)",
+					baseImage, installed)
+			}
 			template = installed
 		}
 		data, err := os.ReadFile(template)
@@ -261,7 +285,17 @@ func isSwtpm(pid int) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(strings.ReplaceAll(string(data), "\x00", " "), "swtpm")
+	// /proc cmdline is NUL-separated, so compare argv ELEMENTS rather than searching the
+	// joined blob. This is the same rule isGuestProcess applies, and this function's comment
+	// already claimed to apply it while doing a substring search: any process whose command
+	// line merely mentions "swtpm" matched, which after pid reuse means SIGTERM to an
+	// unrelated process. An editor open on the app's TPM state directory, a grep, or a build
+	// log is enough to contain the word. Require it to be the program actually running.
+	argv := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
+	if len(argv) == 0 {
+		return false
+	}
+	return filepath.Base(argv[0]) == "swtpm"
 }
 
 func fileExists(path string) bool {
