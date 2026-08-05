@@ -147,7 +147,16 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 	mode := modeFor(cfg)
 	// StopConditions.KeepAlive keeps the container after its entrypoint exits, so it is
 	// not auto-removed (--rm dropped) for the non-detached modes.
-	keepAlive := cfg.StopConditions.KeepAlive
+	//
+	// Autorestart drops it too, and must: podman REFUSES the pair outright ("the --rm option
+	// conflicts with --restart, when the restartPolicy is not \"\" and \"no\""), and it
+	// refuses at the CLI layer, so nothing is created and `podman run` exits non-zero. That
+	// failure is invisible - StartApp is detached with nil stdio and zcr has already exited -
+	// so the launch reported success while leaving the pod, the nft ruleset, the D-Bus proxy
+	// and the Wayland holder behind, and the app never started. A restarting container also
+	// has to survive its own exit by definition, so keeping it is the correct argv anyway.
+	// Reachable from a plain compose import: `restart: always` sets this.
+	keepAlive := cfg.StopConditions.KeepAlive || cfg.StartConditions.Autorestart
 	switch mode {
 	case modeTerminal:
 		// CLI/TUI app: needs an interactive TTY and runs in a spawned terminal window
@@ -163,7 +172,11 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		// Multiterminal keep-alive: detached, no TTY, removed on stop (--rm), with
 		// --init so `podman stop` is prompt (see HolderCmd). Its terminals attach via
 		// ExecArgs.
-		args = append(args, "-d", "--rm", "--init")
+		if keepAlive {
+			args = append(args, "-d", "--init")
+		} else {
+			args = append(args, "-d", "--rm", "--init")
+		}
 	default: // modeForeground
 		if !keepAlive {
 			args = append(args, "--rm")
@@ -447,7 +460,7 @@ func (Runtime) Capture(cmd ports.Command) (string, error) {
 // Every privileged step of a launch - the nft lock-down, the WireGuard setup, the D-Bus proxy -
 // runs from the local helper image, deliberately with --pull never, so a launch never fetches
 // anything (section 5.5). The cost of that choice is this failure: a user who has not run
-// `make netfilter-image` gets "zinc/netfilter:local: image not known" and no thread to pull,
+// `make netfilter-image` gets "localhost/zinc/netfilter:local: image not known" and no thread to pull,
 // because nothing in that sentence says the image was theirs to build. Naming the command costs
 // one line and saves the guess.
 //
@@ -567,8 +580,41 @@ func WaitGone(name string) error {
 		if !engine.Exists(name) {
 			return nil
 		}
-		time.Sleep(appearPoll)
+		// It still exists, so it is either coming back (restart, or a `podman restart`) or it
+		// has exited and is staying that way. Only the first is a reason to keep holding.
+		//
+		// Existence alone cannot tell them apart, and treating "exists" as "still alive" is an
+		// infinite loop for every container that runs without --rm: a KeepAlive or Autorestart
+		// app leaves an Exited container behind for good, so `podman wait` returns instantly
+		// forever, the security context is never revoked, and its socket is never removed. The
+		// architecture's "removed AFTER it dies" then has no time bound at all.
+		//
+		// So give it a restart window and ask whether it is RUNNING, not whether it is there.
+		if engine.restartsWithin(name, restartWindow) {
+			continue
+		}
+		return nil
 	}
+}
+
+// restartWindow bounds how long WaitGone waits for a container to come back after an exit.
+// Podman restarts on its own within a moment, so this only has to outlast that.
+const restartWindow = 3 * time.Second
+
+// restartsWithin reports whether the container is running again before the window elapses.
+// A container that is gone entirely counts as not restarting, which is the same answer.
+func (rt Runtime) restartsWithin(name string, window time.Duration) bool {
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		time.Sleep(appearPoll)
+		if !rt.Exists(name) {
+			return false
+		}
+		if running, _ := rt.Running(); running[name] {
+			return true
+		}
+	}
+	return false
 }
 
 // Do runs a user-facing podman command (stop/restart/inspect/logs) with the host's

@@ -9,7 +9,7 @@ include ../../tool.mk
 # Helper image (nft) carrying nftables for the egress/ingress lock-down init step
 # (section 5.3). Built from the vetted, digest-pinned Containerfile; the tag must match the
 # enforcer's DefaultNetfilterImage.
-NETFILTER_IMAGE ?= zinc/netfilter:local
+NETFILTER_IMAGE ?= localhost/zinc/netfilter:local
 
 ## netfilter-image: build the nft helper image the enforcer applies rules with (section 5.3)
 netfilter-image:

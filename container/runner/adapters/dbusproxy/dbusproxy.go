@@ -31,7 +31,7 @@ import (
 // DefaultImage carries xdg-dbus-proxy. It is the same helper image the netfilter steps use,
 // referenced by local tag and run with --pull never (section 5.5): a locally built, vetted
 // image, never something fetched at launch.
-const DefaultImage = "zinc/netfilter:local"
+const DefaultImage = "localhost/zinc/netfilter:local"
 
 // ctrPaths inside the proxy container. The real bus and the served socket are kept in
 // separate directories so the mount that carries the host bus can never be the directory the
@@ -54,8 +54,19 @@ const ctrRuntimeRoot = "/run/zinc-runtime"
 
 // ctrSocketDir is an app's socket directory as the mkdir/rm helper sees it: the container-side
 // mirror of HostSocketDir, kept here so the two cannot drift into naming different directories.
+//
+// The empty return is a guard, not a code path anyone should reach: this string is the
+// argument to an `rm -rf` in a helper that has the host XDG_RUNTIME_DIR bind-mounted
+// read-write, so a name that walks out of the app's own directory would delete the session's
+// sockets. Validation refuses such a name long before here (nameRE has no '/' and cannot
+// start with '.'), and the callers skip the step on empty, so this is the second lock on a
+// door that is already shut.
 func ctrSocketDir(app string) string {
-	return filepath.Join(ctrRuntimeRoot, "zinc", "dbus", app)
+	dir := filepath.Join(ctrRuntimeRoot, "zinc", "dbus", app)
+	if !strings.HasPrefix(dir, ctrRuntimeRoot+"/zinc/dbus/") {
+		return ""
+	}
+	return dir
 }
 
 // Broker implements ports.DBusBroker. The host facts are held rather than passed per call,
@@ -179,7 +190,13 @@ func (brk Broker) Prepare(cfg schema.AppConfig) ([]ports.Command, error) {
 			"--network", "none",
 			"-v", brk.RuntimeDir + ":" + ctrRuntimeRoot + ":rw",
 			brk.image(),
-			"mkdir", "-m", "700", "-p", ctrSocketDir(cfg.AppNameID),
+			// Each level is its own operand because -m applies only to the last component
+			// of each one: `mkdir -m 700 -p a/b/c` leaves a and a/b at the image's umask
+			// (0755), which is not what "the socket directory is 700" is supposed to mean.
+			"mkdir", "-m", "700", "-p",
+			ctrRuntimeRoot + "/zinc",
+			ctrRuntimeRoot + "/zinc/dbus",
+			ctrSocketDir(cfg.AppNameID),
 		},
 		Desc: "create bus socket dir for " + cfg.AppNameID,
 	}}
@@ -285,7 +302,7 @@ func (brk Broker) Teardown(cfg schema.AppConfig) []ports.Command {
 		Args: []string{"rm", "-f", "--ignore", ContainerName(cfg.AppNameID)},
 		Desc: "remove dbus proxy for " + cfg.AppNameID,
 	}}
-	if brk.RuntimeDir != "" {
+	if socketDir := ctrSocketDir(cfg.AppNameID); brk.RuntimeDir != "" && socketDir != "" {
 		steps = append(steps, ports.Command{
 			Args: []string{
 				"run", "--rm", "--pull", "never",
@@ -294,7 +311,7 @@ func (brk Broker) Teardown(cfg schema.AppConfig) []ports.Command {
 				"--network", "none",
 				"-v", brk.RuntimeDir + ":" + ctrRuntimeRoot + ":rw",
 				brk.image(),
-				"rm", "-rf", ctrSocketDir(cfg.AppNameID),
+				"rm", "-rf", socketDir,
 			},
 			Desc: "remove bus socket dir for " + cfg.AppNameID,
 		})

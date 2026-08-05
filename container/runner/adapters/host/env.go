@@ -6,8 +6,10 @@
 package host
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/crispuscrew/zinc/container/runner/domain/options"
@@ -21,10 +23,40 @@ func Options() options.HostOptions {
 		WaylandDisplay: os.Getenv("WAYLAND_DISPLAY"),
 		ThemeBundleDir: os.Getenv("ZINC_THEME_BUNDLE"),
 		HomeDir:        "/root",
-		NetfilterImage: os.Getenv("ZINC_NETFILTER_IMAGE"),
+		NetfilterImage: netfilterImage(),
 		Terminal:       terminalArgv(),
 		SessionBusPath: sessionBusPath(),
 	}
+}
+
+// netfilterImageRE is the same rule the validator applies to an app image, with the local
+// exemption spelled out: either a localhost/ reference, or a canonical digest pin.
+var netfilterImageRE = regexp.MustCompile(
+	`^(localhost/[A-Za-z0-9][A-Za-z0-9._/-]*(:[A-Za-z0-9._-]+)?|[A-Za-z0-9][A-Za-z0-9._/-]*@sha256:[0-9a-f]{64})$`)
+
+// netfilterImage resolves ZINC_NETFILTER_IMAGE, ignoring a value that is not a reference.
+//
+// This names the most privileged image Zinc runs: the helper that holds CAP_NET_ADMIN in the
+// app's namespace and loads the nft ruleset, and the one that carries xdg-dbus-proxy holding
+// the real session bus. It was passed through unchecked, which meant it was the one image
+// reference in the product held to a weaker standard than the validator applies to an app's
+// own image - and a value beginning with '-' would land in podman's flag position.
+//
+// An unusable value falls back to the built-in default rather than failing the launch: this
+// is an override for developing on the helper image, not a config field, and the default is
+// the safe answer.
+func netfilterImage() string {
+	image := strings.TrimSpace(os.Getenv("ZINC_NETFILTER_IMAGE"))
+	if image == "" {
+		return ""
+	}
+	if !netfilterImageRE.MatchString(image) {
+		fmt.Fprintf(os.Stderr,
+			"warning: ignoring ZINC_NETFILTER_IMAGE=%q - it must be a localhost/ reference or a digest pin (@sha256:<64 hex>); using the built-in default\n",
+			image)
+		return ""
+	}
+	return image
 }
 
 // sessionBusPath resolves the host session bus socket for the D-Bus proxy (DBusMeta).

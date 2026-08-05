@@ -608,3 +608,46 @@ func TestParsePIDsEmpty(t *testing.T) {
 		t.Errorf("parsePIDs of empty output = %v, want nothing", got)
 	}
 }
+
+// podman refuses --rm together with a restart policy, and it refuses at the CLI layer, so
+// nothing is created and the run exits non-zero. StartApp is detached with nil stdio and zcr
+// has already exited by then, so that failure is silent: the launch reports success, the app
+// never starts, and the pod, the nft ruleset, the proxy and the Wayland holder are all left
+// behind. `restart: always` in a compose file imports straight to this.
+func TestAppRunArgs_AutorestartNeverPairsWithRm(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		cfg  func(schema.AppConfig) schema.AppConfig
+	}{
+		{"foreground", func(cfg schema.AppConfig) schema.AppConfig { return cfg }},
+		{"terminal", func(cfg schema.AppConfig) schema.AppConfig {
+			cfg.StartConditions.Terminal = true
+			return cfg
+		}},
+		{"multiterminal holder", func(cfg schema.AppConfig) schema.AppConfig {
+			cfg.StartConditions.Multiterminal = true
+			return cfg
+		}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			cfg := mode.cfg(autorestartCfg())
+			args, err := Runtime{}.AppRunArgs(cfg, options.HostOptions{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			joined := strings.Join(args, " ")
+			if !strings.Contains(joined, "--restart on-failure") {
+				t.Fatalf("Autorestart did not reach the argv: %v", args)
+			}
+			if slices.Contains(args, "--rm") {
+				t.Fatalf("--rm together with --restart: podman refuses this argv outright: %v", args)
+			}
+		})
+	}
+}
+
+func autorestartCfg() schema.AppConfig {
+	cfg := validCfg()
+	cfg.StartConditions.Autorestart = true
+	return cfg
+}

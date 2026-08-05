@@ -614,6 +614,16 @@ func loadApp(svc app.Service, arg string) (schema.AppConfig, error) {
 		// launch is exactly the mis-enforcement the network model refuses elsewhere.
 		return schema.AppConfig{}, fmt.Errorf("app %q is a VM app (Type: %s); run it with zvr", cfg.AppNameID, cfg.Type)
 	}
+	// Validate here, not only in Launch. A store app arrives with its name already checked
+	// against its filename, but the path form (`zcr stop ./x.yaml`) accepts whatever the
+	// file claims, and AppNameID is not just a label: it becomes a container name, a pod
+	// name and a path segment inside an `rm -rf`. Unvalidated, "--all" turns the teardown's
+	// `podman rm -f --ignore <app>` into `podman rm -f --ignore --all`, and "../.." walks
+	// that rm out of the app's own socket directory. Every verb that loads a config goes
+	// through here, so one check covers stop, restart, logs, inspect, where and net.
+	if err := validate.Validate(cfg); err != nil {
+		return schema.AppConfig{}, err
+	}
 	return cfg, nil
 }
 
