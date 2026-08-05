@@ -162,6 +162,11 @@ covers the bytes of a file, and a file can point somewhere else.
   the code does, and `zc` warns whenever it is left on. Making the field opt-in changes the
   meaning of every existing config and so belongs to a `SchemaVersion` bump, not a patch.
 
+- **`flake.lock` is committed.** The flake pinned nixpkgs by commit but shipped no lock, so
+  the second build path had no recorded `narHash` and nothing in the repo said what was
+  actually built. CI now builds with `--no-update-lock-file`, which turns a disagreement
+  between `flake.nix` and the lock into a failure instead of a silent re-resolve.
+
 - **The virtio-win driver ISO no longer claims to be verified.** The check extracted two
   files and confirmed they began with `MZ`, which is a corruption check, and then printed
   "verified". The ISO comes from a floating "stable-virtio" path with no digest, so the
@@ -191,7 +196,6 @@ covers the bytes of a file, and a file can point somewhere else.
 - Every guest reaches host services bound to 127.0.0.1 through user-mode networking's
   gateway. No config field constrains it, and the network model is documented only in the
   inbound direction.
-- `flake.lock` is not committed, so the second build path has no recorded input hashes.
 - Release tags are unsigned and there are no published checksums, so a user who clones has
   nothing to verify.
 - The multiterminal launch does its enforcement in a detached process with stdio discarded,
