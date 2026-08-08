@@ -424,16 +424,19 @@ is meant to. The output says so in both forms rather than leaving it to be assum
 **Weak isolation when enabled.** Granting `/dev/dri` exposes GPU rendering state more
 broadly than process boundaries suggest, and Linux GPU sandboxing is immature.
 
-**GPU access is currently ON unless a config opts out** with `DisplayMeta.DisableGpuAccess:
-true`. This is the one grant in the schema whose zero value is the permissive one, and it is
-the opposite of what this section claimed until 0.9.2: an app that says nothing about the
-display still receives `/dev/dri`. `zc` now warns at authoring time when a config leaves it
-on, so the grant is at least visible where it is made.
+**GPU access is ON unless a config opts out** with `DisplayMeta.DisableGpuAccess: true`. An
+app that says nothing about the display receives `/dev/dri`. This section claimed the
+opposite until 0.9.2; the code was always the authority and the text was wrong.
+
+This is a deliberate exception, and the only grant in the schema whose zero value is the
+permissive one. Every other grant defaults closed: no `NetworkLists` means `--network none`,
+an empty `DBusMeta` means no bus at all, no `Capabilities` means `--cap-drop all`. GPU access
+is opt-out because almost every graphical app needs it and a desktop whose apps render on the
+CPU by default is not one anyone would run. The cost is that a reviewer scanning a config for
+what it was granted will not find this one written down anywhere.
 
 Rule: set `DisableGpuAccess: true` for anything that does not render, and never leave it on
-for untrusted code. Making the field opt-in, so that absent means denied like every other
-grant, changes the meaning of every existing config and is therefore a `SchemaVersion` bump
-rather than a patch.
+for untrusted code.
 
 ### 5.5 Image trust (digest pinning + derived images)
 
@@ -1368,7 +1371,7 @@ the network lock-down applies rules with (6.4).
 | # | Issue | Mitigation |
 |---|-------|------------|
 | 1 | Zinc supplies the security-context identity; what a tagged client is allowed to do is the compositor's policy, and a compositor without the protocol gets the raw socket and a warning | the container boundary is the real wall (5.1); a VM (section 10) is the stronger boundary for untrusted GUI apps |
-| 2 | GPU passthrough weakens isolation, and is granted unless a config opts out | `DisableGpuAccess: true` denies it; `zc` warns whenever it is left on; making it opt-in is a SchemaVersion bump (5.4) |
+| 2 | GPU passthrough weakens isolation, and is granted unless a config opts out | `DisableGpuAccess: true` denies it; opt-out is deliberate, and it is the one grant not written into a config when it applies (5.4) |
 | 3 | Image tags can be poisoned upstream | third-party images must be digest-pinned; launch is `--pull never` (5.5) |
 | 4 | Derived images are per-machine, not digest-pinned | their guarantee is the pinned base plus the visible install lines (7) |
 | 5 | Some schema fields are validated but not yet enforced at runtime (config mounts). Resources and internal user are enforced; notifications are refused outright rather than ignored | called out explicitly in section 3; on the roadmap, fail-loud where relevant |

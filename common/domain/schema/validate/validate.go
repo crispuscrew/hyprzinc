@@ -282,18 +282,6 @@ func Warnings(cfg schema.AppConfig) []string {
 				"(viogpudo, from the virtio-win disc), the screen goes black as soon as the OS starts. "+
 				"Display: Compatible is the driverless choice.")
 	}
-	if cfg.Type == schema.ZincContainer && !cfg.DisplayMeta.DisableGpuAccess {
-		// The only grant in the schema whose zero value is the permissive one: absent means
-		// /dev/dri is bind-mounted. Every other grant defaults closed (no NetworkLists means
-		// --network none, empty DBusMeta means no bus at all, no Capabilities means
-		// --cap-drop all), so a reviewer scanning a config for what it was given will not
-		// see this one. Say it out loud until the field can be made opt-in, which changes
-		// the meaning of existing configs and so needs a SchemaVersion bump.
-		warns = append(warns,
-			"DisplayMeta: GPU access is on because DisableGpuAccess is not set. Unlike every other grant, "+
-				"this one defaults to allowed: the app gets /dev/dri even if it never renders. "+
-				"Set DisableGpuAccess: true unless this app needs the GPU.")
-	}
 	warns = append(warns, dbusWarnings(cfg.DBusMeta)...)
 	for index, netList := range cfg.NetworkMeta.NetworkLists {
 		if netList.Ingress {

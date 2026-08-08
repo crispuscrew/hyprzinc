@@ -157,10 +157,11 @@ covers the bytes of a file, and a file can point somewhere else.
 
 - **The GPU default is documented honestly.** `/dev/dri` is granted unless a config sets
   `DisplayMeta.DisableGpuAccess`, and the architecture doc said twice that GPU access was off
-  by default. It is the one grant in the schema whose zero value is the permissive one, so a
-  reviewer scanning a config for what it was given does not see it. The doc now states what
-  the code does, and `zc` warns whenever it is left on. Making the field opt-in changes the
-  meaning of every existing config and so belongs to a `SchemaVersion` bump, not a patch.
+  by default. The code was always the authority; the text was wrong. Opt-out is deliberate,
+  since almost every graphical app needs the GPU, and it stays that way: no field is renamed
+  and no config changes. What the doc now records is that this is the one grant in the schema
+  whose zero value is permissive, and therefore the one that does not appear in a config when
+  it applies.
 
 - **`flake.lock` is committed.** The flake pinned nixpkgs by commit but shipped no lock, so
   the second build path had no recorded `narHash` and nothing in the repo said what was
