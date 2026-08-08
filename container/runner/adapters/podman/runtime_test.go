@@ -107,7 +107,7 @@ func TestAppRunArgs_BackgroundGPUMountCap(t *testing.T) {
 		StopConditions: schema.StopConditions{Background: true},
 		DisplayMeta:    schema.DisplayMeta{DisableSecurityContext: true}, // passthrough; GPU on (default)
 		Volumes:        []schema.Volume{{InnerMount: "/work", HostMounted: true, HostMount: "/home/user/code", Writable: true}},
-		AudioMeta:      schema.AudioMeta{Pipewire: true},
+		AudioMeta:      schema.AudioMeta{Playback: schema.AudioDevice{Default: true}},
 		Capabilities:   []string{"NET_RAW"},
 	}
 	got := appArgs(t, cfg, baseOpts(), []string{"--network", "container:vpn"})
@@ -125,11 +125,11 @@ func TestAppRunArgs_BackgroundGPUMountCap(t *testing.T) {
 	}
 }
 
-func TestAppRunArgs_PipewireWithoutWayland(t *testing.T) {
+func TestAppRunArgs_AudioWithoutWayland(t *testing.T) {
 	cfg := schema.AppConfig{
 		AppNameID: "mpd",
 		ImageMeta: schema.ImageMeta{Image: "img@sha256:abc"},
-		AudioMeta: schema.AudioMeta{Pipewire: true},
+		AudioMeta: schema.AudioMeta{Playback: schema.AudioDevice{Default: true}},
 	}
 	opt := baseOpts()
 	opt.WaylandDisplay = "" // headless: no Wayland socket wired

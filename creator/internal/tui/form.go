@@ -202,12 +202,12 @@ func (frm *formModel) buildFields() {
 		boolean("display.disable_security_context",
 			func() bool { return frm.draft.DisplayMeta.DisableSecurityContext },
 			func(val bool) { frm.draft.DisplayMeta.DisableSecurityContext = val }),
-		boolean("audio.pipewire",
-			func() bool { return frm.draft.AudioMeta.Pipewire },
-			func(val bool) { frm.draft.AudioMeta.Pipewire = val }),
-		boolean("audio.legacy_alsa",
-			func() bool { return frm.draft.AudioMeta.LegacyALSA },
-			func(val bool) { frm.draft.AudioMeta.LegacyALSA = val }),
+		boolean("audio.playback",
+			func() bool { return !frm.draft.AudioMeta.Playback.IsZero() },
+			func(val bool) { setAudio(&frm.draft.AudioMeta.Playback, val) }),
+		boolean("audio.microphone",
+			func() bool { return !frm.draft.AudioMeta.Microphone.IsZero() },
+			func(val bool) { setAudio(&frm.draft.AudioMeta.Microphone, val) }),
 		boolean("host_theme",
 			func() bool { return frm.draft.HostTheme },
 			func(val bool) { frm.draft.HostTheme = val }),
@@ -255,9 +255,14 @@ func (frm *formModel) vmFields() []formField {
 		{label: "description", kind: kindText, input: &frm.desc},
 		{label: "icon", kind: kindText, input: &frm.icon},
 		{
-			label: "audio.pipewire", kind: kindBool,
-			bget: func() bool { return frm.draft.AudioMeta.Pipewire },
-			bset: func(val bool) { frm.draft.AudioMeta.Pipewire = val },
+			label: "audio.playback", kind: kindBool,
+			bget: func() bool { return !frm.draft.AudioMeta.Playback.IsZero() },
+			bset: func(val bool) { setAudio(&frm.draft.AudioMeta.Playback, val) },
+		},
+		{
+			label: "audio.microphone", kind: kindBool,
+			bget: func() bool { return !frm.draft.AudioMeta.Microphone.IsZero() },
+			bset: func(val bool) { setAudio(&frm.draft.AudioMeta.Microphone, val) },
 		},
 		{label: "advanced", kind: kindAction, info: frm.advancedSummary},
 	}
@@ -525,4 +530,24 @@ func splitLines(text string) []string {
 		}
 	}
 	return out
+}
+
+// setAudio toggles one direction of audio from the form's boolean row.
+//
+// The form offers the two simple answers, granted and not; naming exact /dev/snd nodes is a
+// list-valued edit and lives in the $EDITOR round trip with Volumes and NetworkLists. That
+// makes turning a row ON ambiguous for a config that already names devices, and the wrong
+// answer is expensive: overwriting the list with `default` would WIDEN the grant from one
+// microphone to the session's, silently, because someone pressed a key on a row that was
+// already showing true. So an existing device list is left exactly as it is.
+//
+// Turning a row OFF is unambiguous and clears whichever form was there: the user asked for
+// this direction not to be granted, and none is none.
+func setAudio(dev *schema.AudioDevice, granted bool) {
+	switch {
+	case !granted:
+		*dev = schema.AudioDevice{}
+	case dev.IsZero():
+		*dev = schema.AudioDevice{Default: true}
+	}
 }

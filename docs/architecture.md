@@ -140,9 +140,9 @@ Configs: []                      # bundle-relative config mounts; DEFERRED (not 
 Volumes: []                      # explicit host bind mounts are wired; see below
 Keys: []                         # SSH/GPG convenience mounts; see below
 HostTheme: true                  # mount the curated host theme bundle read-only (5.6)
-AudioMeta:
-  Pipewire: false                # pass the Pipewire socket in
-  LegacyALSA: false              # mount /dev/snd for ALSA-only apps (rare)
+AudioMeta:                       # one grant per direction; absent means none
+  Playback: default              # none | default | a list of /dev/snd nodes
+  Microphone: none               # same three forms
 Capabilities: []                 # extra `--cap-add` entries, on top of the drop-all baseline
 ```
 
@@ -180,7 +180,7 @@ Keys:
 **Wired at runtime in 0.1:** identity/image, the network attach and lock-down, the
 capability drop-all baseline plus `Capabilities`, the Wayland socket (its own, under a
 security context, where the compositor implements one - 5.2),
-GPU device, the theme bundle, audio (Pipewire socket / `/dev/snd`), explicit host bind
+GPU device, the theme bundle, audio (the PipeWire socket, or named `/dev/snd` nodes), explicit host bind
 mounts, SSH/GPG key mounts, the entrypoint override, and the terminal / multiterminal /
 background / keep-alive lifecycle. `ResourcesMeta` (`--cpus`, `--memory`, `--memory-swap`, `--pids-limit`) and
 `InternalUserMeta` (`--user`, `--userns=keep-id`) are enforced now. **Schema-defined
@@ -558,6 +558,41 @@ putting a D-Bus client (a protocol implementation, an auth handshake, a dependen
 sandbox runtime would buy no isolation.
 
 ---
+
+### 5.9 Audio
+
+`AudioMeta` grants sound one direction at a time. Each direction takes one of three forms,
+and they are spelled differently because they are enforced differently:
+
+| Form | Means | Enforced by |
+|---|---|---|
+| `none`, or absent | not granted | nothing to enforce |
+| `default` | the session's own device, via the PipeWire socket | see below |
+| `[/dev/snd/...]` | exactly these ALSA nodes | the kernel, through `--device` |
+
+**The device-list form is the strong one.** Those nodes are passed with `--device` and
+nothing else on the sound subsystem is reachable, so an app granted one microphone cannot
+open a second card. Naming a capture stream usually means naming two nodes, the card's
+control node and its PCM: `/dev/snd/controlC0` and `/dev/snd/pcmC0D0c`.
+
+**`default` is not yet enforcement on a container.** It mounts the session's PipeWire socket,
+and PipeWire grants a client on that socket both directions plus the monitor sources that
+record what other applications are playing. So `Playback: default` with `Microphone: none`
+states something the runtime cannot currently hold the app to, and `zc` says so at authoring
+time. Closing it means Zinc speaking PipeWire's security context (`pw_security_context_create`,
+present since PipeWire 1.0) the way it already speaks Wayland's, creating a restricted
+per-instance socket instead of handing over the session one. Until then, an app that must not
+be able to listen should name its devices rather than take the default.
+
+**On a VM, `default` IS enforced.** The guest is given an `hda-output` codec, which has no
+capture stream, unless a microphone was granted, in which case it gets `hda-duplex`. There is
+no capture endpoint for the guest to open. A device list is refused for a VM app, because a
+guest cannot be handed a host character device.
+
+Before schema v3 this was one flag, `Pipewire: true`, which mounted the socket and therefore
+granted listening to every app that wanted to make a sound. The split exists so a config can
+state the narrower thing, and so the gap between what it states and what is enforced is
+visible rather than silent.
 
 ## 6. Networking model and startup ordering
 
@@ -1258,7 +1293,7 @@ Zinc adds almost nothing to the host. The moving parts:
 | A terminal emulator | drops into terminal/multiterminal apps on explicit launch |
 | `zc` / `zcr` | two static binaries on `$PATH` - author and run apps |
 | Rootless Podman + pasta | the container runtime and userspace networking |
-| Pipewire (optional) | audio; the socket is passed in only on explicit grant |
+| Pipewire (optional) | audio; the socket is passed in only on explicit grant, and it grants BOTH directions regardless of which the config asked for (see 5.9) |
 
 Everything else runs inside containers. The host-side values a launch needs (Wayland and
 runtime sockets, the theme bundle, the terminal emulator, the netfilter image) are resolved

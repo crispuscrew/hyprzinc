@@ -58,12 +58,12 @@ func TestValidateDispatch(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	quiet(t)
 
-	good := writeApp(t, "SchemaVersion: 2\nType: ZincContainer\nAppNameID: demo\nImageMeta:\n  Image: docker.io/library/alpine"+digestPin+"\n")
+	good := writeApp(t, "SchemaVersion: 3\nType: ZincContainer\nAppNameID: demo\nImageMeta:\n  Image: docker.io/library/alpine"+digestPin+"\n")
 	if err := run([]string{"validate", good}); err != nil {
 		t.Fatalf("validate of a good app should pass, got: %v", err)
 	}
 
-	bad := writeApp(t, "SchemaVersion: 2\nType: ZincContainer\nAppNameID: demo\nImageMeta:\n  Image: alpine:latest\n")
+	bad := writeApp(t, "SchemaVersion: 3\nType: ZincContainer\nAppNameID: demo\nImageMeta:\n  Image: alpine:latest\n")
 	if err := run([]string{"validate", bad}); err == nil {
 		t.Fatal("validate of a non-digest-pinned image should fail")
 	}
@@ -81,7 +81,7 @@ func TestVMAppRefusedByRunner(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	quiet(t)
 
-	vm := writeApp(t, "SchemaVersion: 2\nType: ZincVirtualization\nAppNameID: guest\n"+
+	vm := writeApp(t, "SchemaVersion: 3\nType: ZincVirtualization\nAppNameID: guest\n"+
 		"ImageMeta:\n  Image: /var/lib/zinc/images/fedora.qcow2\n"+
 		"VirtualizationMeta:\n  BaseDigest: sha256:"+strings.Repeat("a", 64)+
 		"\n  MemoryMiB: 4096\n  VCPUs: 2\n  Display: None\n")
@@ -100,7 +100,7 @@ func TestRunDryRun(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	quiet(t)
 
-	good := writeApp(t, "SchemaVersion: 2\nType: ZincContainer\nAppNameID: demo\nImageMeta:\n  Image: docker.io/library/alpine"+digestPin+"\n")
+	good := writeApp(t, "SchemaVersion: 3\nType: ZincContainer\nAppNameID: demo\nImageMeta:\n  Image: docker.io/library/alpine"+digestPin+"\n")
 	if err := run([]string{"run", good}); err != nil {
 		t.Fatalf("dry-run of a good app should succeed, got: %v", err)
 	}
@@ -133,7 +133,7 @@ func captureStdout(t *testing.T, fn func()) string {
 func TestRunRuntimeVolumeInPlan(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	appPath := writeApp(t, "SchemaVersion: 2\nType: ZincContainer\nAppNameID: demo\nImageMeta:\n  Image: docker.io/library/alpine"+digestPin+"\n")
+	appPath := writeApp(t, "SchemaVersion: 3\nType: ZincContainer\nAppNameID: demo\nImageMeta:\n  Image: docker.io/library/alpine"+digestPin+"\n")
 	var runErr error
 	out := captureStdout(t, func() {
 		runErr = run([]string{"run", appPath, "-v", "/host/dl:/downloads:rw", "--volume", "/etc/hosts:/etc/hosts"})
@@ -156,7 +156,7 @@ func TestRunRuntimeVolumeRejectedByValidation(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	quiet(t)
 
-	appPath := writeApp(t, "SchemaVersion: 2\nType: ZincContainer\nAppNameID: demo\nImageMeta:\n  Image: docker.io/library/alpine"+digestPin+"\n")
+	appPath := writeApp(t, "SchemaVersion: 3\nType: ZincContainer\nAppNameID: demo\nImageMeta:\n  Image: docker.io/library/alpine"+digestPin+"\n")
 	// A trailing ':' segment reads as an empty CONTAINER path (four fields would be
 	// rejected at parse time); an unsafe char inside a field is caught at validation.
 	if err := run([]string{"run", appPath, "-v", "/ho st:/inner"}); err == nil {

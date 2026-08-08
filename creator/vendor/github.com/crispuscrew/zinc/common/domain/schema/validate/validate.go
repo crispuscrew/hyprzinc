@@ -49,6 +49,7 @@ func Validate(cfg schema.AppConfig) error {
 		checkConfig(index, configMount, add)
 	}
 	checkKeys(cfg.Keys, add)
+	checkAudio(cfg, add)
 	checkCapabilities(cfg.Capabilities, add)
 	checkNetworkCapabilities(cfg, add)
 
@@ -282,6 +283,8 @@ func Warnings(cfg schema.AppConfig) []string {
 				"(viogpudo, from the virtio-win disc), the screen goes black as soon as the OS starts. "+
 				"Display: Compatible is the driverless choice.")
 	}
+	warns = append(warns, dbusWarnings(cfg.DBusMeta)...)
+	warns = append(warns, audioWarnings(cfg)...)
 	for index, netList := range cfg.NetworkMeta.NetworkLists {
 		if netList.Ingress {
 			warns = append(warns, ingressWarnings(index, netList)...)

@@ -51,7 +51,7 @@ func resolveErr(t *testing.T, app string, files map[string]string) error {
 func TestResolve_ChildOverridesBase(t *testing.T) {
 	cfg := resolveFrom(t, "child", map[string]string{
 		"base": `
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 AppNameID: base
 ImageMeta:
@@ -61,7 +61,7 @@ ResourcesMeta:
   PIDsLimit: 64
 `,
 		"child": `
-SchemaVersion: 2
+SchemaVersion: 3
 AppNameID: child
 Inherits: base
 ResourcesMeta:
@@ -91,7 +91,7 @@ ResourcesMeta:
 func TestResolve_ChildCanTurnAFlagOff(t *testing.T) {
 	cfg := resolveFrom(t, "child", map[string]string{
 		"base": `
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 AppNameID: base
 ImageMeta:
@@ -121,7 +121,7 @@ DisplayMeta:
 func TestResolve_ChildCanEmptyAnInheritedList(t *testing.T) {
 	cfg := resolveFrom(t, "child", map[string]string{
 		"base": `
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 AppNameID: base
 ImageMeta:
@@ -147,7 +147,7 @@ Capabilities: []
 func TestResolve_StatedListReplaces(t *testing.T) {
 	cfg := resolveFrom(t, "child", map[string]string{
 		"base": `
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 AppNameID: base
 ImageMeta:
@@ -177,7 +177,7 @@ Capabilities: [SYS_PTRACE]
 func TestResolve_Chain(t *testing.T) {
 	cfg := resolveFrom(t, "leaf", map[string]string{
 		"root": `
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 AppNameID: root
 ImageMeta:
@@ -255,7 +255,7 @@ func TestResolve_DepthBounded(t *testing.T) {
 // An app that inherits from nothing must come back byte-identical: the overwhelmingly common
 // case must not be re-encoded, reordered, or otherwise touched on its way through.
 func TestResolve_NoInheritanceIsUntouched(t *testing.T) {
-	const text = "SchemaVersion: 2\nAppNameID: solo\nImageMeta:\n  Image: localhost/solo:local\n"
+	const text = "SchemaVersion: 3\nAppNameID: solo\nImageMeta:\n  Image: localhost/solo:local\n"
 	out, err := Resolve([]byte(text), func(string) ([]byte, error) {
 		t.Fatal("a config with no Inherits must not load a base")
 		return nil, nil

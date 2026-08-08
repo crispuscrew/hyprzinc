@@ -1,9 +1,14 @@
 package schema
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
 
 // SchemaVersion is the only app-config schema version this build understands.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 type Type string
 
@@ -472,7 +477,77 @@ type Key struct {
 	Path string  `yaml:"Path"`
 }
 
+// AudioMeta grants sound, one direction at a time. It says WHAT an app gets rather than
+// HOW it is delivered: the runner picks the transport from the form each direction takes.
+//
+// Splitting the two directions is the point. A microphone is a different capability from a
+// speaker, and until schema v3 one flag granted both: `Pipewire: true` mounted the session
+// socket, and PipeWire's default access hands that client capture as well as playback, plus
+// the monitor sources that record whatever ANOTHER app is playing. An app that only ever
+// makes noise was granted the ability to listen to the room, and the config had no way to
+// say otherwise.
 type AudioMeta struct {
-	Pipewire   bool `yaml:"Pipewire"`
-	LegacyALSA bool `yaml:"LegacyALSA"`
+	Playback   AudioDevice `yaml:"Playback"`
+	Microphone AudioDevice `yaml:"Microphone"`
+}
+
+// AudioDevice is one direction of audio. Three forms, and they differ in how strongly they
+// are enforced, which is why they are spelled differently rather than hidden behind one bool:
+//
+//	none            not granted (also what an absent field means)
+//	default         the session's own device, reached through the PipeWire socket
+//	[/dev/snd/...]  exactly these ALSA nodes and nothing else
+//
+// The list form is the strong one: those device nodes are passed with `--device` and the
+// kernel enforces it, so an app given one microphone cannot open a second card. The `default`
+// form is convenience, and on a CONTAINER it is not yet enforcement: mounting the PipeWire
+// socket grants capture whatever this field says, until Zinc speaks PipeWire's security
+// context the way it already speaks Wayland's. Validation says so rather than letting the
+// field read like a control it is not. On a VM `default` IS enforced, because the guest is
+// given a playback-only sound device unless a microphone was asked for.
+type AudioDevice struct {
+	Default bool     // the session's own device
+	Devices []string // exact /dev/snd nodes; mutually exclusive with Default
+}
+
+// IsZero reports the "not granted" state, which is both the absent field and an explicit
+// `none`.
+func (dev AudioDevice) IsZero() bool { return !dev.Default && len(dev.Devices) == 0 }
+
+// audioNone and audioDefault are the two scalar spellings. Anything else scalar is refused
+// by name, so a typo is an error rather than a silent denial.
+const (
+	audioNone    = "none"
+	audioDefault = "default"
+)
+
+// UnmarshalYAML accepts the scalar forms and the list form. An absent field never reaches
+// here and stays zero, which is the same as `none`.
+func (dev *AudioDevice) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		switch node.Value {
+		case audioNone, "", "null", "~":
+			return nil
+		case audioDefault:
+			dev.Default = true
+			return nil
+		}
+		return fmt.Errorf("%q: want %s, %s, or a list of /dev/snd device nodes",
+			node.Value, audioNone, audioDefault)
+	}
+	return node.Decode(&dev.Devices)
+}
+
+// MarshalYAML writes the state back in the form it was meant to be read in. "not granted" is
+// written as an explicit `none` rather than omitted: a config that says `Microphone: none`
+// records that the grant was considered and refused, which is the same reason the schema
+// writes an explicit `false` for every other denial instead of leaving the key out.
+func (dev AudioDevice) MarshalYAML() (any, error) {
+	switch {
+	case dev.Default:
+		return audioDefault, nil
+	case len(dev.Devices) > 0:
+		return dev.Devices, nil
+	}
+	return audioNone, nil
 }

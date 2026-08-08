@@ -65,7 +65,68 @@ func checkBusName(field string, index int, name string, allowWildcard bool, add 
 		add("DBusMeta.%s[%d]: %q - a subtree wildcard cannot be owned, since a process claims one concrete name or none", field, index, name)
 	case !busNameRE.MatchString(base):
 		add("DBusMeta.%s[%d]: %q is not a well-known bus name - two or more dot-separated elements of [A-Za-z0-9_-], no element starting with a digit", field, index, name)
+	case wildcard && strings.Count(base, ".") < 2:
+		// A wildcard grants the whole subtree under its base, including services that appear
+		// there later. With a two-element base that subtree is an entire vendor namespace:
+		// "org.freedesktop.*" covers org.freedesktop.systemd1, whose StartTransientUnit runs
+		// an arbitrary command as the user OUTSIDE the container, plus org.freedesktop.secrets
+		// (the keyring) and every portal. One tidy-looking line, and the sandbox is gone. A
+		// wildcard has to name something more specific than a vendor prefix.
+		add("DBusMeta.%s[%d]: %q grants an entire vendor namespace - a wildcard must name at least three elements before the '*' (org.freedesktop.portal.*, not org.freedesktop.*), because the subtree includes services that appear under it later and org.freedesktop.systemd1 alone is a way out of the sandbox", field, index, name)
 	}
+}
+
+// escapeNames are bus services that hand a caller code execution outside the container. A
+// grant naming one is legal and is occasionally what someone means, but it is not something
+// a reviewer should have to recognise on sight, so it is said out loud at authoring time.
+//
+// The list is short on purpose: only names where the escape is the service's advertised
+// purpose. It is a prompt, not a boundary. The boundary is that a wildcard cannot be broad
+// enough to sweep these up by accident (see checkBusName).
+var escapeNames = map[string]string{
+	"org.freedesktop.systemd1":                    "StartTransientUnit runs an arbitrary command as the user, outside the container",
+	"org.freedesktop.Flatpak":                     "Spawn runs an arbitrary command on the host",
+	"org.freedesktop.secrets":                     "the login keyring: every stored secret the user has",
+	"org.freedesktop.impl.portal.PermissionStore": "the backing store for portal permissions, so an app can grant itself portal access",
+}
+
+// dbusWarnings surfaces grants that are valid, deliberate-looking, and much wider than they
+// read. Validation already refuses a vendor-wide wildcard; what is left is worth a word.
+func dbusWarnings(bus schema.DBusMeta) []string {
+	if bus.IsZero() {
+		return nil
+	}
+	var warns []string
+	for _, name := range bus.Talk {
+		trimmed := strings.TrimSpace(name)
+		if why, ok := escapeNames[trimmed]; ok {
+			warns = append(warns, "DBusMeta.Talk: "+trimmed+" is a way out of the sandbox - "+why)
+			continue
+		}
+		if strings.HasSuffix(trimmed, ".*") {
+			warns = append(warns, "DBusMeta.Talk: "+trimmed+
+				" is a subtree, so it also grants every service that appears under it later, including ones that do not exist yet")
+		}
+	}
+	for _, name := range bus.Own {
+		trimmed := strings.TrimSpace(name)
+		if _, ok := wellKnownOwners[trimmed]; ok {
+			warns = append(warns, "DBusMeta.Own: "+trimmed+
+				" is a name the desktop's own service normally claims - if this app wins the race it receives what was meant for that service")
+		}
+	}
+	return warns
+}
+
+// wellKnownOwners are names a desktop service is expected to own. An app owning one is
+// impersonation if it gets there first, which is a claim worth surfacing.
+var wellKnownOwners = map[string]struct{}{
+	"org.freedesktop.Notifications":      {},
+	"org.freedesktop.secrets":            {},
+	"org.freedesktop.ScreenSaver":        {},
+	"org.freedesktop.FileManager1":       {},
+	"org.mpris.MediaPlayer2":             {},
+	"org.freedesktop.impl.portal.Access": {},
 }
 
 // checkSourceTag screens ImageMeta.SourceTag. It is provenance rather than something a launch
@@ -80,7 +141,10 @@ func checkSourceTag(tag string, add addFunc) {
 		return // absent is fine: a hand-pinned digest has no known origin
 	case trimmed != tag || hasUnsafe(tag):
 		add("ImageMeta.SourceTag: %q must not contain whitespace or control characters", tag)
-	case digestRE.MatchString(tag):
+	case strings.Contains(tag, "@sha256:"):
+		// Deliberately looser than digestRE, which is anchored so an IMAGE reference cannot
+		// begin with something podman would read as a flag. Here the question is only
+		// "does this record a digest", so any occurrence counts.
 		add("ImageMeta.SourceTag: %q is a digest, not a tag - re-resolving it would return itself and report the pin as never stale; record the tag it came from, or leave this empty", tag)
 	}
 }

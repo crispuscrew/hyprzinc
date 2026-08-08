@@ -1,4 +1,4 @@
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 AppNameID: capped
 Description: containment scenario - resource caps and a non-root user, read back from the kernel

@@ -8,7 +8,7 @@ import (
 
 func writeApp(t *testing.T, dir, name, desc string) {
 	t.Helper()
-	body := "SchemaVersion: 2\nType: ZincContainer\nAppNameID: " + name +
+	body := "SchemaVersion: 3\nType: ZincContainer\nAppNameID: " + name +
 		"\nDescription: " + desc + "\nImageMeta:\n  Image: localhost/app:local\n"
 	if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestLoad_RejectsUnsafeNames(t *testing.T) {
 // app listed by the picker (List's charset allows dots) but impossible to load or launch.
 func TestLoad_AllowsDotsInsideAName(t *testing.T) {
 	dir := t.TempDir()
-	body := "SchemaVersion: 2\nType: ZincContainer\nAppNameID: my..app\nDescription: dotted\nImageMeta:\n  Image: localhost/x:local\n"
+	body := "SchemaVersion: 3\nType: ZincContainer\nAppNameID: my..app\nDescription: dotted\nImageMeta:\n  Image: localhost/x:local\n"
 	if err := os.WriteFile(filepath.Join(dir, "my..app.yaml"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

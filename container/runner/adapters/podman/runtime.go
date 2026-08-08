@@ -254,14 +254,23 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		args = append(args, "-v", opt.ThemeBundleDir+":"+ctrThemeDir+":ro")
 	}
 
-	// Audio (section 3 AudioMeta).
-	if cfg.AudioMeta.Pipewire && opt.RuntimeDir != "" {
+	// Audio (section 3 AudioMeta). The config states a direction and a strength; this picks
+	// the transport. `default` in either direction is the session's own device, which means
+	// the PipeWire socket, mounted once however many directions asked for it. A device list
+	// is passed as exactly those nodes, and nothing else on the sound subsystem is reachable.
+	//
+	// Worth being precise about what the socket does and does not buy: PipeWire grants a
+	// client on it both directions regardless of which one the config asked for, so
+	// `Playback: default` with `Microphone: none` is a claim the runtime cannot yet keep.
+	// validate.Warnings says so. The device-list form has no such gap, because the kernel is
+	// what enforces it.
+	if (cfg.AudioMeta.Playback.Default || cfg.AudioMeta.Microphone.Default) && opt.RuntimeDir != "" {
 		pipewireSock := filepath.Join(opt.RuntimeDir, "pipewire-0")
 		args = append(args, "-v", pipewireSock+":"+filepath.Join(ctrXDGRuntime, "pipewire-0")+":ro")
 		exportRuntimeDir()
 	}
-	if cfg.AudioMeta.LegacyALSA {
-		args = append(args, "--device", "/dev/snd")
+	for _, device := range audioDevices(cfg.AudioMeta) {
+		args = append(args, "--device", device)
 	}
 
 	// Host-mounted volumes (section 3 Volumes). Anonymous/size-limited volumes and Configs
@@ -682,4 +691,21 @@ func parsePIDs(out string) map[string]int {
 func (Runtime) Logs(name string, tail int) (string, error) {
 	out, err := exec.Command("podman", "logs", "--tail", strconv.Itoa(tail), name).CombinedOutput()
 	return string(out), err
+}
+
+// audioDevices is every ALSA node the two directions named, in order and without repeats.
+// The two lists overlap in practice: a capture stream needs its card's control node, and so
+// does a playback stream on the same card, so a config granting both directions of one
+// device names controlC0 twice. Passing --device twice for one node is not an error, but the
+// argv is what --dry-run prints and what a reviewer reads, so it should say each node once.
+func audioDevices(audio schema.AudioMeta) []string {
+	var devices []string
+	for _, list := range [][]string{audio.Playback.Devices, audio.Microphone.Devices} {
+		for _, device := range list {
+			if !slices.Contains(devices, device) {
+				devices = append(devices, device)
+			}
+		}
+	}
+	return devices
 }

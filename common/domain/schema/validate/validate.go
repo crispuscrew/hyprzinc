@@ -49,6 +49,7 @@ func Validate(cfg schema.AppConfig) error {
 		checkConfig(index, configMount, add)
 	}
 	checkKeys(cfg.Keys, add)
+	checkAudio(cfg, add)
 	checkCapabilities(cfg.Capabilities, add)
 	checkNetworkCapabilities(cfg, add)
 
@@ -283,6 +284,7 @@ func Warnings(cfg schema.AppConfig) []string {
 				"Display: Compatible is the driverless choice.")
 	}
 	warns = append(warns, dbusWarnings(cfg.DBusMeta)...)
+	warns = append(warns, audioWarnings(cfg)...)
 	for index, netList := range cfg.NetworkMeta.NetworkLists {
 		if netList.Ingress {
 			warns = append(warns, ingressWarnings(index, netList)...)

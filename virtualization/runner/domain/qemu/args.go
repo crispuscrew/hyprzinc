@@ -187,16 +187,29 @@ func displayArgs(virt schema.VirtualizationMeta) []string {
 // audioArgs routes guest audio to pipewire when the app asked for it. An app that did not
 // gets no sound card at all, rather than a silent one: the grant is explicit, as it is for
 // containers.
+//
+// The microphone is a separate device, not a separate setting on one. hda-duplex is a codec
+// with both a playback and a capture stream; hda-output has only playback. So a guest that
+// was not granted a microphone does not have one to open: there is no capture endpoint on
+// its sound card, and nothing inside the guest can conjure one. That is real enforcement, and
+// it is the reason the VM side can keep the promise the container side cannot yet keep.
+//
+// Only the `default` form reaches here. A device list names host character devices, which a
+// guest has no way to receive, and validation refuses that pairing rather than ignoring it.
 func audioArgs(audio schema.AudioMeta) []string {
-	if !audio.Pipewire {
+	if audio.Playback.IsZero() && audio.Microphone.IsZero() {
 		return nil
+	}
+	codec := "hda-output"
+	if !audio.Microphone.IsZero() {
+		codec = "hda-duplex"
 	}
 	return []string{
 		"-audiodev", "pipewire,id=snd0",
 		// intel-hda is the device every guest OS already has a driver for, which matters
 		// more here than the marginal efficiency of a virtio sound device.
 		"-device", "intel-hda",
-		"-device", "hda-duplex,audiodev=snd0",
+		"-device", codec + ",audiodev=snd0",
 	}
 }
 

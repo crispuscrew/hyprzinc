@@ -7,6 +7,44 @@ tracked in [RELEASES.md](RELEASES.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **Schema v3: audio is granted one direction at a time.** `AudioMeta.Pipewire` and
+  `AudioMeta.LegacyALSA` are replaced by `Playback` and `Microphone`, each taking one of
+  three forms: `none` (also what an absent field means), `default`, or a list of `/dev/snd`
+  device nodes.
+
+  The old flag could not express the difference. `Pipewire: true` mounted the session socket,
+  and PipeWire grants a client on that socket capture as well as playback, plus the monitor
+  sources that record what other applications are playing. So every app that wanted to make a
+  sound was also granted the ability to listen to the room, and no config could say otherwise.
+  On the VM side it was worse in a way that needed no PipeWire at all: `hda-duplex` was
+  attached unconditionally, so every audio-enabled guest had a microphone it never asked for.
+
+  The three forms are spelled differently because they are enforced differently, and the
+  schema should not hide that:
+
+  - A device list is passed with `--device` and the kernel enforces it. An app granted one
+    microphone cannot open a second card. This is the strong form.
+  - `default` on a VM is enforced by qemu: the guest gets an `hda-output` codec with no
+    capture stream unless a microphone was granted. There is no endpoint to open.
+  - `default` on a container is **not** enforced yet. It mounts the PipeWire socket, which
+    grants both directions whatever the config asked for. `zc` warns on exactly this case
+    rather than letting the field read like a control it is not. Closing it means Zinc
+    speaking PipeWire's security context the way it already speaks Wayland's.
+
+  The field also writes its denials out: a config that does not want sound records
+  `Playback: none` rather than omitting the key, so a reviewer sees that the grant was
+  considered and refused. That is the same reason the schema has always written an explicit
+  `false` for other denials.
+
+  **Migration.** `SchemaVersion` becomes 3 and every config needs the version line bumped;
+  `Pipewire: true` becomes `Playback: default`, plus `Microphone: default` if the app records.
+  `LegacyALSA: true` granted all of `/dev/snd`, every card in both directions, and has no
+  direct equivalent: name the nodes the app needs. Decoding rejects unknown keys, so a config
+  left at v2 fails loudly with the offending field named rather than losing a grant silently.
+
+
 A second audit, aimed at the places 0.9.1 did not reach: the VM disk chain, the paths that
 load a config without validating it, and the tools around the runner. Two findings share a
 root cause worth stating plainly, because it is the same mistake in two subsystems: a pin

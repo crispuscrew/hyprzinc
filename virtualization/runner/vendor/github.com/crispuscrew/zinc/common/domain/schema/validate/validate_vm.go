@@ -214,6 +214,8 @@ func checkContainerOnlyFields(cfg schema.AppConfig, add addFunc) {
 			"sharing a host directory into a guest needs virtiofs, which this build does not implement"},
 		{len(cfg.Configs) > 0, "Configs",
 			"sharing a host directory into a guest needs virtiofs, which this build does not implement"},
+		{len(cfg.AudioMeta.Playback.Devices) > 0 || len(cfg.AudioMeta.Microphone.Devices) > 0, "AudioMeta device lists",
+			"a guest cannot be handed a host character device; guest audio is routed through the session's PipeWire, so use `default` (or `none`)"},
 		{cfg.HostTheme, "HostTheme",
 			"the theme bundle is a read-only bind mount, which a guest cannot take"},
 		{!cfg.DBusMeta.IsZero(), "DBusMeta",

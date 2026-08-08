@@ -1,4 +1,4 @@
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 AppNameID: waiter
 Description: readiness scenario - must not start until slowdep says it is ready

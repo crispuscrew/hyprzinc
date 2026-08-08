@@ -172,7 +172,7 @@ var seedApps = []struct {
 	name string
 	yaml string
 }{
-	{"example-shell", `SchemaVersion: 2
+	{"example-shell", `SchemaVersion: 3
 Type: ZincContainer
 AppNameID: example-shell
 Description: A terminal in a container - the smallest thing that runs
@@ -183,7 +183,7 @@ StartConditions:
   Entrypoint: /bin/sh
   Terminal: true
 `},
-	{"example-egress", `SchemaVersion: 2
+	{"example-egress", `SchemaVersion: 3
 Type: ZincContainer
 AppNameID: example-egress
 Description: Network locked down to one destination - everything else is dropped
@@ -200,7 +200,7 @@ NetworkMeta:
     - Domains: ["example.com"]
       Ports: [443]
 `},
-	{"example-instanced", `SchemaVersion: 2
+	{"example-instanced", `SchemaVersion: 3
 Type: ZincContainer
 AppNameID: example-instanced
 Description: One definition, many instances - run it as example-instanced@work

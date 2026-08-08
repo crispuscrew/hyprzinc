@@ -145,7 +145,7 @@ func TestMarshalLoadRoundtrip(t *testing.T) {
 func TestLoad_UnknownKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")
-	const body = `SchemaVersion: 2
+	const body = `SchemaVersion: 3
 Type: ZincContainer
 AppNameID: x
 ImageMeta:
@@ -193,11 +193,11 @@ func writeApp(t *testing.T, sto *Store, name, text string) {
 // still the child.
 func TestLoadResolved_MergesTheBase(t *testing.T) {
 	sto := tempStore(t)
-	writeApp(t, sto, "base", "SchemaVersion: 2\nType: ZincContainer\nAppNameID: base\n"+
+	writeApp(t, sto, "base", "SchemaVersion: 3\nType: ZincContainer\nAppNameID: base\n"+
 		"ImageMeta:\n  Image: localhost/base:local\n"+
 		"ResourcesMeta:\n  MaxRamMiB: 256\n  PIDsLimit: 64\n"+
 		"HostTheme: true\nCapabilities: [NET_RAW]\n")
-	writeApp(t, sto, "child", "SchemaVersion: 2\nType: ZincContainer\nAppNameID: child\nInherits: base\n"+
+	writeApp(t, sto, "child", "SchemaVersion: 3\nType: ZincContainer\nAppNameID: child\nInherits: base\n"+
 		"ResourcesMeta:\n  MaxRamMiB: 1024\n"+
 		"HostTheme: false\nCapabilities: []\n")
 
@@ -235,9 +235,9 @@ func TestLoadResolved_MergesTheBase(t *testing.T) {
 // inherits with zeros, silently, in a file that looks perfectly normal afterwards.
 func TestSave_RefusesToRewriteAnInheritingApp(t *testing.T) {
 	sto := tempStore(t)
-	writeApp(t, sto, "base", "SchemaVersion: 2\nType: ZincContainer\nAppNameID: base\n"+
+	writeApp(t, sto, "base", "SchemaVersion: 3\nType: ZincContainer\nAppNameID: base\n"+
 		"ImageMeta:\n  Image: localhost/base:local\n")
-	const childText = "SchemaVersion: 2\nType: ZincContainer\nAppNameID: child\nInherits: base\nIcon: firefox\n"
+	const childText = "SchemaVersion: 3\nType: ZincContainer\nAppNameID: child\nInherits: base\nIcon: firefox\n"
 	writeApp(t, sto, "child", childText)
 
 	cfg, err := sto.Load("child")
@@ -274,10 +274,10 @@ func TestSave_UnaffectedWithoutInheritance(t *testing.T) {
 // that contains the app.
 func TestLoadResolved_FailsClosed(t *testing.T) {
 	sto := tempStore(t)
-	writeApp(t, sto, "orphan", "SchemaVersion: 2\nAppNameID: orphan\nInherits: ghost\n")
-	writeApp(t, sto, "loop-a", "SchemaVersion: 2\nAppNameID: loop-a\nInherits: loop-b\n")
-	writeApp(t, sto, "loop-b", "SchemaVersion: 2\nAppNameID: loop-b\nInherits: loop-a\n")
-	writeApp(t, sto, "escape", "SchemaVersion: 2\nAppNameID: escape\nInherits: ../../etc/evil\n")
+	writeApp(t, sto, "orphan", "SchemaVersion: 3\nAppNameID: orphan\nInherits: ghost\n")
+	writeApp(t, sto, "loop-a", "SchemaVersion: 3\nAppNameID: loop-a\nInherits: loop-b\n")
+	writeApp(t, sto, "loop-b", "SchemaVersion: 3\nAppNameID: loop-b\nInherits: loop-a\n")
+	writeApp(t, sto, "escape", "SchemaVersion: 3\nAppNameID: escape\nInherits: ../../etc/evil\n")
 
 	for _, testCase := range []struct{ app, want string }{
 		{"orphan", "ghost"},
@@ -301,9 +301,9 @@ func TestLoadResolved_FailsClosed(t *testing.T) {
 // `browser` is. Inheriting apps are hand-written, so nothing else keeps the two in step.
 func TestLoadResolved_RefusesToTakeTheBasesIdentity(t *testing.T) {
 	sto := tempStore(t)
-	writeApp(t, sto, "browser", "SchemaVersion: 2\nType: ZincContainer\nAppNameID: browser\n"+
+	writeApp(t, sto, "browser", "SchemaVersion: 3\nType: ZincContainer\nAppNameID: browser\n"+
 		"ImageMeta:\n  Image: localhost/browser:local\n")
-	writeApp(t, sto, "notes", "SchemaVersion: 2\nInherits: browser\nIcon: notes\n")
+	writeApp(t, sto, "notes", "SchemaVersion: 3\nInherits: browser\nIcon: notes\n")
 
 	_, err := sto.LoadResolved("notes")
 	if err == nil {
@@ -314,7 +314,7 @@ func TestLoadResolved_RefusesToTakeTheBasesIdentity(t *testing.T) {
 	}
 
 	// Stating its own name is all it takes.
-	writeApp(t, sto, "notes", "SchemaVersion: 2\nAppNameID: notes\nInherits: browser\nIcon: notes\n")
+	writeApp(t, sto, "notes", "SchemaVersion: 3\nAppNameID: notes\nInherits: browser\nIcon: notes\n")
 	cfg, err := sto.LoadResolved("notes")
 	if err != nil {
 		t.Fatal(err)

@@ -228,13 +228,45 @@ func TestArgs_AudioOnlyOnGrant(t *testing.T) {
 		}
 	}
 
-	cfg.AudioMeta.Pipewire = true
+	cfg.AudioMeta.Playback = schema.AudioDevice{Default: true}
 	args := Args(cfg, testLayout())
 	if got := pairs(args, "-audiodev"); len(got) != 1 || !strings.HasPrefix(got[0], "pipewire") {
 		t.Errorf("-audiodev = %v, want pipewire", got)
 	}
+	// Playback only: the codec must have no capture stream, so there is no microphone inside
+	// the guest to open. hda-duplex here would hand every audio-enabled guest a microphone it
+	// never asked for, which is what this used to do.
+	if !has(pairs(args, "-device"), "hda-output,audiodev=snd0") {
+		t.Errorf("playback-only audio should attach hda-output, got %v", pairs(args, "-device"))
+	}
+	if has(pairs(args, "-device"), "hda-duplex,audiodev=snd0") {
+		t.Error("a guest with no Microphone grant must not get a capture-capable codec")
+	}
+}
+
+// A microphone is a device the guest either has or does not. Granting it swaps the codec for
+// one that carries a capture stream; without the grant that endpoint does not exist, which is
+// enforcement the container side cannot yet match.
+func TestArgs_MicrophoneGrantAttachesACaptureCodec(t *testing.T) {
+	cfg := testCfg()
+	cfg.AudioMeta.Playback = schema.AudioDevice{Default: true}
+	cfg.AudioMeta.Microphone = schema.AudioDevice{Default: true}
+	args := Args(cfg, testLayout())
 	if !has(pairs(args, "-device"), "hda-duplex,audiodev=snd0") {
-		t.Error("granted audio should attach a sound device bound to the pipewire backend")
+		t.Errorf("a granted microphone should attach hda-duplex, got %v", pairs(args, "-device"))
+	}
+}
+
+// A microphone with no playback is still a sound card, and it still has to carry capture.
+func TestArgs_MicrophoneAloneStillAttachesAudio(t *testing.T) {
+	cfg := testCfg()
+	cfg.AudioMeta.Microphone = schema.AudioDevice{Default: true}
+	args := Args(cfg, testLayout())
+	if got := pairs(args, "-audiodev"); len(got) != 1 {
+		t.Fatalf("-audiodev = %v, want one backend", got)
+	}
+	if !has(pairs(args, "-device"), "hda-duplex,audiodev=snd0") {
+		t.Errorf("microphone-only audio should still attach hda-duplex, got %v", pairs(args, "-device"))
 	}
 }
 

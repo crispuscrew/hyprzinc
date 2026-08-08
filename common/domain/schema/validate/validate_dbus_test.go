@@ -11,7 +11,7 @@ import (
 // requires already set - so each test below changes exactly the one thing it is about.
 func dbusApp() schema.AppConfig {
 	cfg := schema.AppConfig{
-		SchemaVersion:    2,
+		SchemaVersion:    3,
 		Type:             schema.ZincContainer,
 		AppNameID:        "notes",
 		ImageMeta:        schema.ImageMeta{Image: "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)},
@@ -100,7 +100,7 @@ func TestDBus_WildcardTalkOnlyNotOwn(t *testing.T) {
 // rather than a field that looks configured and does nothing.
 func TestDBus_RejectedOnVMApp(t *testing.T) {
 	cfg := schema.AppConfig{
-		SchemaVersion: 2,
+		SchemaVersion: 3,
 		Type:          schema.ZincVirtualization,
 		AppNameID:     "guest",
 		ImageMeta:     schema.ImageMeta{Image: "/var/lib/zinc/base.qcow2"},
