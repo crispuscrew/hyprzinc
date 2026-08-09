@@ -693,13 +693,10 @@ func expandMounts(cfg *schema.AppConfig, addr paths.Address) error {
 		}
 		cfg.Volumes[index].HostMount = expanded
 	}
-	for index := range cfg.Configs {
-		expanded, err := addr.Expand(cfg.Configs[index].HostMount)
-		if err != nil {
-			return fmt.Errorf("Configs[%d]: %w", index, err)
-		}
-		cfg.Configs[index].HostMount = expanded
-	}
+	// Configs are deliberately absent here. A bundle path names authored content that ships
+	// with the app, not a runtime location, so {state} and friends have nothing to say about
+	// it - and expanding them produced an absolute path that this config's own validator then
+	// rejected for being absolute, which meant a placeholder in a Config could never work.
 	return nil
 }
 

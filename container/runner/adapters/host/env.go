@@ -22,6 +22,7 @@ func Options() options.HostOptions {
 		RuntimeDir:     os.Getenv("XDG_RUNTIME_DIR"),
 		WaylandDisplay: os.Getenv("WAYLAND_DISPLAY"),
 		ThemeBundleDir: os.Getenv("ZINC_THEME_BUNDLE"),
+		ConfigHome:     configHome(),
 		HomeDir:        "/root",
 		NetfilterImage: netfilterImage(),
 		Terminal:       terminalArgv(),
@@ -110,4 +111,17 @@ func terminalArgv() []string {
 		spec = os.Getenv("TERMINAL")
 	}
 	return strings.Fields(spec)
+}
+
+// configHome resolves XDG_CONFIG_HOME with its specified default, since an app's bundle is
+// found relative to it and the variable is unset on most desktops.
+func configHome() string {
+	if dir := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config")
 }

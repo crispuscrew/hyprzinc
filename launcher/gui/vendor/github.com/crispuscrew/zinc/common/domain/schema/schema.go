@@ -56,12 +56,12 @@ type AppConfig struct {
 	// field can never look configured while doing nothing.
 	VirtualizationMeta VirtualizationMeta `yaml:"VirtualizationMeta"`
 
-	Configs      []Volume  `yaml:"Configs"` // Use host local path from app_name/configs/ folder
-	Volumes      []Volume  `yaml:"Volumes"` // extra host bind mounts can also be added for one run via `zcr run -v` (not persisted here)
-	Keys         []Key     `yaml:"Keys"`
-	HostTheme    bool      `yaml:"HostTheme"`
-	AudioMeta    AudioMeta `yaml:"AudioMeta"`
-	Capabilities []string  `yaml:"Capabilities"` // if container --cap-add entries
+	Configs      []ConfigFile `yaml:"Configs"` // files the app ships with, from its own bundle
+	Volumes      []Volume     `yaml:"Volumes"` // extra host bind mounts can also be added for one run via `zcr run -v` (not persisted here)
+	Keys         []Key        `yaml:"Keys"`
+	HostTheme    bool         `yaml:"HostTheme"`
+	AudioMeta    AudioMeta    `yaml:"AudioMeta"`
+	Capabilities []string     `yaml:"Capabilities"` // if container --cap-add entries
 }
 
 type StartConditions struct {
@@ -450,6 +450,29 @@ type NotificationMeta struct {
 }
 
 // Readable drop, because u cannot mount something u cannot read
+// ConfigFile is one file the app ships with: authored alongside the app, kept in the app's
+// own bundle directory, and mounted into the container at launch.
+//
+// It has its own type rather than borrowing Volume, which is what it did until schema v3.
+// Sharing that struct meant three of its six fields were meaningless here - HostMounted was
+// documented as ignored, SizeLimited and SizeLimitMiB were validated and could never apply to
+// a single file - and, worse, the one field they did share carried opposite rules: a Volume's
+// HostMount must be an absolute host path, while a Config's had to be relative and was
+// rejected if absolute. One name, one type, two contradictory meanings depending on which
+// list the entry happened to sit in.
+type ConfigFile struct {
+	// BundlePath is relative to this app's bundle: $XDG_CONFIG_HOME/zinc/apps/<app>/configs.
+	// Relative on purpose, and enforced: a config is content the app was authored WITH, so it
+	// travels with the app. An absolute path here would be a host bind mount wearing a
+	// different field's name, and Volumes is where those belong and where they are reviewed.
+	BundlePath string `yaml:"BundlePath"`
+	InnerMount string `yaml:"InnerMount"`
+	// Writable lets the app change its own config and have that survive, which some apps
+	// expect. It is opt-in because the default should be that what a reviewer read is what
+	// the app keeps running with.
+	Writable bool `yaml:"Writable"`
+}
+
 type Volume struct {
 	InnerMount string `yaml:"InnerMount"`
 

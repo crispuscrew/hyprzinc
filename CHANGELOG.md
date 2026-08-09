@@ -9,6 +9,33 @@ tracked in [RELEASES.md](RELEASES.md).
 
 ### Changed
 
+- **Schema v3: `Configs` has its own type, and is finally mounted.** It was declared as
+  `[]Volume`, the same struct as `Volumes`, and the sharing was the problem. Three of that
+  struct's six fields could never apply to a single authored file: `HostMounted` was
+  documented as ignored, `SizeLimited` and `SizeLimitMiB` were validated and meaningless. The
+  one field the two lists did share carried opposite rules, since a `Volume.HostMount` must be
+  an absolute host path while a `Config`'s had to be relative and was rejected if absolute. One
+  field name, one type, two contradictory meanings depending on which list an entry sat in.
+
+  And none of it did anything. A `Configs` entry validated, had `{state}` expanded into it,
+  was counted in `zc`'s form, was described by the compose exporter and was refused for VM
+  apps, and then produced no mount at all: the app started without its file and nothing said
+  why. Meanwhile `NotificationMeta`, also unimplemented, is refused outright on the stated
+  principle that a deferred field must not look configured. `Configs` was the one place that
+  rule was not applied.
+
+  It is now `[]ConfigFile` with three fields that all mean something: `BundlePath` (relative
+  to the app's bundle), `InnerMount`, and `Writable` (read-only by default, so what a reviewer
+  read is what the app runs with). The mount is wired, sourced from
+  `$XDG_CONFIG_HOME/zinc/apps/<app>/configs/`, which is the path validation messages had been
+  naming all along while no code resolved it. Per app rather than per instance: authored
+  content is shared by every instance, and per-instance content is state.
+
+  Placeholders are refused in a `BundlePath` rather than expanded. They named runtime paths,
+  so expansion produced an absolute path that this same config's validator then rejected for
+  being absolute, meaning a placeholder in a `Config` could never have worked.
+
+
 - **Schema v3: audio is granted one direction at a time.** `AudioMeta.Pipewire` and
   `AudioMeta.LegacyALSA` are replaced by `Playback` and `Microphone`, each taking one of
   three forms: `none` (also what an absent field means), `default`, or a list of `/dev/snd`

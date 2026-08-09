@@ -98,7 +98,7 @@ func FromApp(cfg schema.AppConfig) (Project, []string, error) {
 		note("Keys are mounted read-only into the home of the user the app runs as; the paths below are the host's and are not portable to another machine.")
 	}
 	if len(cfg.Configs) > 0 {
-		note("Configs are not represented: they are resolved from the app's own bundle directory by the runner, which compose has no equivalent for. The described container starts without them.")
+		note("Configs are not represented: they are mounted from the app's own bundle directory (apps/<app>/configs), which compose has no equivalent for. The described container starts without them.")
 	}
 	if cfg.ResourcesMeta.MaxSwapMiB > 0 {
 		// compose takes one memory figure; podman's --memory-swap is a TOTAL. Writing the sum

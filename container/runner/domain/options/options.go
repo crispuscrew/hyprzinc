@@ -10,6 +10,7 @@ type HostOptions struct {
 	RuntimeDir     string   // host XDG_RUNTIME_DIR (wayland/pipewire sockets)
 	WaylandDisplay string   // host WAYLAND_DISPLAY, e.g. "wayland-1"
 	ThemeBundleDir string   // host path to the generated curated theme bundle (section 5.6)
+	ConfigHome     string   // host XDG_CONFIG_HOME, the root an app's bundle is resolved from
 	NetfilterImage string   // image carrying nft for the pasta lock-down step (section 5.3); empty → adapter default
 	HomeDir        string   // container-side home for key mounts (.ssh/.gnupg); empty → /root
 	Terminal       []string // terminal-emulator argv for terminal apps, e.g. ["foot"] or ["xterm","-e"] (section 11)

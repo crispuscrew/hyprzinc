@@ -23,6 +23,7 @@ import (
 	"github.com/crispuscrew/zinc/common/domain/schema"
 	"github.com/crispuscrew/zinc/container/runner/domain/derived"
 	"github.com/crispuscrew/zinc/container/runner/domain/options"
+	"github.com/crispuscrew/zinc/container/runner/domain/paths"
 	"github.com/crispuscrew/zinc/container/runner/ports"
 )
 
@@ -273,8 +274,27 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		args = append(args, "--device", device)
 	}
 
-	// Host-mounted volumes (section 3 Volumes). Anonymous/size-limited volumes and Configs
-	// (bundle-relative) are deferred; only explicit host bind mounts are wired here.
+	// Config files (section 3 Configs): the files the app was authored with, from its own
+	// bundle. Read-only unless the config says otherwise, because the point of shipping a
+	// file with an app is that what a reviewer read is what the app runs with.
+	//
+	// The source is joined here rather than being resolved into the config, so BundlePath
+	// stays the relative thing validation checks. Rewriting it to an absolute path on load
+	// would make the config fail its own validator on the next read.
+	for _, configFile := range cfg.Configs {
+		bundle := paths.BundleDir(opt.ConfigHome, cfg.AppNameID)
+		if bundle == "" {
+			return nil, fmt.Errorf("%s: cannot resolve the app's bundle directory (XDG_CONFIG_HOME and $HOME are both unset), so Configs[%q] has no source", cfg.AppNameID, configFile.BundlePath)
+		}
+		mountOpts := "ro"
+		if configFile.Writable {
+			mountOpts = "rw"
+		}
+		args = append(args, "-v", filepath.Join(bundle, configFile.BundlePath)+":"+configFile.InnerMount+":"+mountOpts)
+	}
+
+	// Host-mounted volumes (section 3 Volumes). Anonymous/size-limited volumes are deferred;
+	// only explicit host bind mounts are wired here.
 	for _, volume := range cfg.Volumes {
 		if !volume.HostMounted || strings.TrimSpace(volume.HostMount) == "" {
 			continue

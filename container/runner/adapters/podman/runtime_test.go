@@ -651,3 +651,38 @@ func autorestartCfg() schema.AppConfig {
 	cfg.StartConditions.Autorestart = true
 	return cfg
 }
+
+// A Config is mounted from the app's own bundle, read-only by default. Before schema v3 this
+// field validated, expanded placeholders, was counted in the TUI and refused for VM apps, and
+// then produced no mount at all: the app started without its file and nothing said why.
+func TestAppRunArgs_ConfigsAreMountedFromTheBundle(t *testing.T) {
+	cfg := validCfg()
+	cfg.Configs = []schema.ConfigFile{
+		{BundlePath: "settings.json", InnerMount: "/etc/app/settings.json"},
+		{BundlePath: "sub/state.ini", InnerMount: "/etc/app/state.ini", Writable: true},
+	}
+	args, err := Runtime{}.AppRunArgs(cfg, options.HostOptions{ConfigHome: "/home/u/.config"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"/home/u/.config/zinc/apps/demo/configs/settings.json:/etc/app/settings.json:ro",
+		"/home/u/.config/zinc/apps/demo/configs/sub/state.ini:/etc/app/state.ini:rw",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing config mount %q in:\n%s", want, joined)
+		}
+	}
+}
+
+// Without a resolvable bundle root there is no source for the file, and mounting a
+// path that resolves to nothing would have podman create an empty directory over the
+// container path. Refuse instead.
+func TestAppRunArgs_ConfigWithoutABundleRootIsRefused(t *testing.T) {
+	cfg := validCfg()
+	cfg.Configs = []schema.ConfigFile{{BundlePath: "settings.json", InnerMount: "/etc/app.json"}}
+	if _, err := (Runtime{}).AppRunArgs(cfg, options.HostOptions{}, nil); err == nil {
+		t.Fatal("a Config with no resolvable bundle directory should refuse, not mount nothing")
+	}
+}

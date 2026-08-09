@@ -125,7 +125,7 @@ func TestVM_ContainerOnlyFieldsRejected(t *testing.T) {
 			cfg.Volumes = []schema.Volume{{HostMounted: true, HostMount: "/data", InnerMount: "/data"}}
 		}, "Volumes"},
 		{"configs", func(cfg *schema.AppConfig) {
-			cfg.Configs = []schema.Volume{{InnerMount: "/etc/app"}}
+			cfg.Configs = []schema.ConfigFile{{BundlePath: "app.conf", InnerMount: "/etc/app"}}
 		}, "Configs"},
 		{"host theme", func(cfg *schema.AppConfig) { cfg.HostTheme = true }, "HostTheme"},
 		{"multiterminal", func(cfg *schema.AppConfig) {

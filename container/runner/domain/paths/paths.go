@@ -185,3 +185,20 @@ func (addr Address) Expand(path string) (string, error) {
 	}
 	return expanded, nil
 }
+
+// BundleDir is where an app's authored files live: the configs it ships with, resolved from
+// the app's name rather than from anything a config states.
+//
+// Per app, not per instance. A config file is content the app was authored WITH, so every
+// instance of an app reads the same one; per-instance content is runtime state and belongs
+// under StateDir.
+//
+// This is deliberately beside the app definition, so `apps/notes.yaml` and its bundle at
+// `apps/notes/` travel together and a reviewer finds one by looking at the other. The path
+// was already named in validation messages before anything resolved it; this is that path.
+func BundleDir(configHome, app string) string {
+	if configHome == "" {
+		return ""
+	}
+	return filepath.Join(configHome, "zinc", "apps", app, "configs")
+}

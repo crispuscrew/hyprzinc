@@ -63,22 +63,26 @@ func checkHostSource(list string, index int, source string, add addFunc) {
 	}
 }
 
-// checkConfig: like a Volume but bundle-relative (apps/<name>/configs/) - no absolute
-// path, leading '/', or '..'; HostMounted is ignored (a Config is always bundle-sourced).
-func checkConfig(index int, configMount schema.Volume, add addFunc) {
-	checkInner("Configs", index, configMount.InnerMount, add)
-	source := configMount.HostMount
+// checkConfig screens one ConfigFile. The source is bundle-relative by design, so the rules
+// are the mirror image of a Volume's: a Volume must be absolute, a Config must not be.
+func checkConfig(index int, configFile schema.ConfigFile, add addFunc) {
+	checkInner("Configs", index, configFile.InnerMount, add)
+	source := configFile.BundlePath
 	switch {
 	case strings.TrimSpace(source) == "":
-		add("Configs[%d].HostMount: must name a path under the app bundle (apps/<name>/configs/)", index)
+		add("Configs[%d].BundlePath: must name a file under the app's bundle (apps/<app>/configs/)", index)
 	case hasUnsafe(source) || strings.ContainsAny(source, ":,"):
-		add("Configs[%d].HostMount %q: must not contain ':', ',', or whitespace (it shifts podman's -v fields)", index, source)
+		add("Configs[%d].BundlePath %q: must not contain ':', ',', or whitespace (it shifts podman's -v fields)", index, source)
 	case strings.HasPrefix(source, "/"):
-		add("Configs[%d].HostMount %q: must be relative to the app bundle, not an absolute path", index, source)
+		add("Configs[%d].BundlePath %q: must be relative to the app's bundle, not an absolute path - an absolute host path is a Volume, and that is where one gets reviewed", index, source)
 	case hasDotDot(source):
-		add("Configs[%d].HostMount %q: must not escape the app bundle (no '..' segments)", index, source)
+		add("Configs[%d].BundlePath %q: must not escape the bundle (no '..' segments)", index, source)
+	case strings.Contains(source, "{"):
+		// The placeholders name runtime state, and a bundle path names authored content. The
+		// two were wired together before v3 and could not both hold: expansion produced an
+		// absolute state path, which this same function then rejected for being absolute.
+		add("Configs[%d].BundlePath %q: placeholders are for runtime paths (Volumes), not for a bundle file, which ships with the app", index, source)
 	}
-	checkSizeLimit("Configs", index, configMount, add)
 }
 
 // checkKeys: known Type + field-shift-safe Path (mounted path:dest:ro).

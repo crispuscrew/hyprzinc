@@ -136,7 +136,10 @@ NotificationMeta:                # NOT implemented - a non-default value is refu
   AllowedProlonged: false
   AllowedLinks: false
 
-Configs: []                      # bundle-relative config mounts; DEFERRED (not wired yet)
+Configs:                         # files the app ships with, from apps/<app>/configs/
+  - BundlePath: settings.json    # relative to the bundle; absolute is a Volume, not this
+    InnerMount: /etc/app/settings.json
+    Writable: false              # read-only by default
 Volumes: []                      # explicit host bind mounts are wired; see below
 Keys: []                         # SSH/GPG convenience mounts; see below
 HostTheme: true                  # mount the curated host theme bundle read-only (5.6)
@@ -184,9 +187,16 @@ GPU device, the theme bundle, audio (the PipeWire socket, or named `/dev/snd` no
 mounts, SSH/GPG key mounts, the entrypoint override, and the terminal / multiterminal /
 background / keep-alive lifecycle. `ResourcesMeta` (`--cpus`, `--memory`, `--memory-swap`, `--pids-limit`) and
 `InternalUserMeta` (`--user`, `--userns=keep-id`) are enforced now. **Schema-defined
-and not wired into the launch:** `NotificationMeta` and `Configs`. `NotificationMeta` is
-refused rather than ignored - Zinc has no notification path, so accepting `Silenced` would
-tell an author their app is muted while it notifies freely.
+and not wired into the launch:** `NotificationMeta`, which is refused rather than ignored -
+Zinc has no notification path, so accepting `Silenced` would tell an author their app is
+muted while it notifies freely.
+
+`Configs` was the one exception to that rule until schema v3: it validated, expanded
+placeholders, was counted by `zc` and refused for VM apps, and then produced no mount, so an
+app started without its file and nothing said why. It is wired now, and it has its own type
+rather than borrowing `Volume` - which mattered because the borrowed `HostMount` carried the
+opposite rule in each list (a Volume's must be absolute, a Config's must not be) while
+`HostMounted`, `SizeLimited` and `SizeLimitMiB` could never apply to a single file at all.
 
 ---
 
@@ -859,8 +869,12 @@ never silently mis-enforced. Rejected in this build:
 - **An ingress list that targets an `AppName`** - contradictory (a producer publishes to any
   sibling that joins its link; the consumer names the producer).
 
-Also deferred at the mount layer: bundle-relative `Configs` mounts and anonymous/size-limited
-volumes; only explicit host bind mounts are wired (section 3).
+`Configs` are mounted from the app's own bundle at
+`$XDG_CONFIG_HOME/zinc/apps/<app>/configs/<BundlePath>`, read-only unless `Writable` says
+otherwise. Per app rather than per instance: a config file is content the app was authored
+with, so every instance reads the same one, and per-instance content is runtime state under
+the state directory instead. Still deferred at the mount layer: anonymous and size-limited
+volumes; only explicit host bind mounts and these bundle files are wired (section 3).
 
 ### 6.6 Dependency startup ordering
 
