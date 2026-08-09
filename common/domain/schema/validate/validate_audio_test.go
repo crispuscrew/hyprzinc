@@ -78,3 +78,26 @@ func TestAudio_ContainerPlaybackOnlyWarnsThatCaptureIsNotDenied(t *testing.T) {
 		t.Errorf("granting both directions should not warn, got: %v", Warnings(cfg))
 	}
 }
+
+// A sink's .monitor source is a readable tap on everything played through it, so the socket
+// grants "record what other apps are playing" as well as "record the room". Asking for a
+// microphone is not asking for that, so granting one must not silence the warning.
+func TestAudio_MonitorAccessIsWarnedEvenWithAMicrophoneGrant(t *testing.T) {
+	cfg := baseCfg()
+	cfg.AudioMeta.Playback = schema.AudioDevice{Default: true}
+	cfg.AudioMeta.Microphone = schema.AudioDevice{Default: true}
+	joined := strings.Join(Warnings(cfg), "\n")
+	if !strings.Contains(joined, ".monitor") {
+		t.Errorf("granting a microphone should not hide the monitor-source grant, got: %v", Warnings(cfg))
+	}
+	if strings.Contains(joined, "not yet enforced") {
+		t.Errorf("an app that asked to listen should not be told its Microphone: none is unenforced: %v", Warnings(cfg))
+	}
+
+	// A device list is the enforceable form and carries neither caveat.
+	cfg.AudioMeta.Playback = schema.AudioDevice{Devices: []string{"/dev/snd/controlC1", "/dev/snd/pcmC1D3p"}}
+	cfg.AudioMeta.Microphone = schema.AudioDevice{Devices: []string{"/dev/snd/controlC0", "/dev/snd/pcmC0D0c"}}
+	if joined := strings.Join(Warnings(cfg), "\n"); strings.Contains(joined, ".monitor") {
+		t.Errorf("ALSA nodes carry no other app's stream, so they should not warn: %v", Warnings(cfg))
+	}
+}
