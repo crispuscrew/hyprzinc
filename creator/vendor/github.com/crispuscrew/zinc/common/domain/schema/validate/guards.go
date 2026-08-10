@@ -15,9 +15,12 @@ import (
 // nameRE: podman object-name charset (lowercase [a-z0-9._-], starts alphanumeric).
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
-// digestRE: canonical sha256 pin (@sha256: + 64 hex), anchored - a short/fake digest
-// must not smuggle extra FROM-line directives (section 5.5).
-var digestRE = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
+// digestRE: canonical sha256 pin (@sha256: + 64 hex). Anchored at BOTH ends - a short or
+// fake digest must not smuggle extra FROM-line directives (section 5.5), and without a head
+// anchor the reference only had to END in something digest-shaped, so
+// "-v/:/host@sha256:<64 hex>" passed as a pinned image and reached podman in the one argv
+// slot that is a bare positional, where pflag reads a leading '-' as a flag.
+var digestRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*@sha256:[0-9a-f]{64}$`)
 
 // ifaceRE: interface charset; no comma/space that would splice pasta options.
 var ifaceRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
