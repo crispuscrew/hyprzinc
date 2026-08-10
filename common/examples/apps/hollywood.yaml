@@ -38,6 +38,7 @@ ResourcesMeta:
 AudioMeta:
   Playback: none                  # terminal eye-candy, no sound in either direction
   Microphone: none
+  Monitor: none
 
 HostTheme: true
 

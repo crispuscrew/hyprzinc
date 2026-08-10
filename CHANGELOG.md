@@ -36,6 +36,23 @@ tracked in [RELEASES.md](RELEASES.md).
   being absolute, meaning a placeholder in a `Config` could never have worked.
 
 
+- **Schema v3: `AudioMeta.Monitor`, the third audio capability.** A PipeWire sink carries a
+  `.monitor` source, a readable tap on everything mixed into it, so a client on the session
+  socket can record what OTHER apps are playing. That is a distinct capability from a
+  microphone and a more unusual one: it crosses the boundary between two sandboxed apps rather
+  than between an app and a host device, since a music player and a video call share a sink.
+
+  It takes only `none` or `default`. A device list is refused, because a monitor source is part
+  of PipeWire's graph and no `/dev/snd` node carries one, so a list would read as a narrowing
+  while doing nothing. It is refused for a VM app as well, whose guest sees an emulated sound
+  card rather than the host graph.
+
+  Like `Microphone: none`, `Monitor: none` is not yet enforced for a container, and validation
+  says so. The field still earns its place before enforcement exists: an app that really does
+  record the desktop can now declare it, and one that claims it does not is told plainly that
+  the claim is not being kept. It is a capability on the recorder, never a protection on the
+  recorded: nothing in a music player's config can keep another app off its sink.
+
 - **Schema v3: audio is granted one direction at a time.** `AudioMeta.Pipewire` and
   `AudioMeta.LegacyALSA` are replaced by `Playback` and `Microphone`, each taking one of
   three forms: `none` (also what an absent field means), `default`, or a list of `/dev/snd`

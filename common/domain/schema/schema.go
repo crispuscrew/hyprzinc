@@ -512,6 +512,20 @@ type Key struct {
 type AudioMeta struct {
 	Playback   AudioDevice `yaml:"Playback"`
 	Microphone AudioDevice `yaml:"Microphone"`
+	// Monitor is the capability to record what OTHER apps are playing. A PipeWire sink
+	// carries a `.monitor` source, which is a readable tap on everything mixed into it, and a
+	// client on the session socket can open one. That is what a screen recorder uses, and it
+	// crosses the boundary between two sandboxed apps rather than between an app and a host
+	// device: a music player and a video call share a sink.
+	//
+	// It is a capability on the RECORDER, not a protection on the app being recorded. Zinc can
+	// only describe what an app may do, so there is no "my output is private" to write in the
+	// player's config: whether anything taps its sink is decided by the other app's grant.
+	//
+	// `none` is not yet enforced for a container, because mounting the socket grants this
+	// whatever the field says; validation says so. `default` is honest and costs nothing, so
+	// an app that really does record the desktop can declare it today.
+	Monitor AudioDevice `yaml:"Monitor"`
 }
 
 // AudioDevice is one direction of audio. Three forms, and they differ in how strongly they

@@ -90,14 +90,59 @@ func TestAudio_MonitorAccessIsWarnedEvenWithAMicrophoneGrant(t *testing.T) {
 	if !strings.Contains(joined, ".monitor") {
 		t.Errorf("granting a microphone should not hide the monitor-source grant, got: %v", Warnings(cfg))
 	}
-	if strings.Contains(joined, "not yet enforced") {
+	if strings.Contains(joined, "Microphone: none is not yet enforced") {
 		t.Errorf("an app that asked to listen should not be told its Microphone: none is unenforced: %v", Warnings(cfg))
 	}
+
+	// Declaring Monitor is an honest description of what the socket grants, so it should not
+	// then be warned about. The field earns its place precisely by being sayable.
+	cfg.AudioMeta.Monitor = schema.AudioDevice{Default: true}
+	if joined := strings.Join(Warnings(cfg), "\n"); strings.Contains(joined, ".monitor") {
+		t.Errorf("an app that declared Monitor should not be warned about it: %v", Warnings(cfg))
+	}
+	cfg.AudioMeta.Monitor = schema.AudioDevice{}
 
 	// A device list is the enforceable form and carries neither caveat.
 	cfg.AudioMeta.Playback = schema.AudioDevice{Devices: []string{"/dev/snd/controlC1", "/dev/snd/pcmC1D3p"}}
 	cfg.AudioMeta.Microphone = schema.AudioDevice{Devices: []string{"/dev/snd/controlC0", "/dev/snd/pcmC0D0c"}}
 	if joined := strings.Join(Warnings(cfg), "\n"); strings.Contains(joined, ".monitor") {
 		t.Errorf("ALSA nodes carry no other app's stream, so they should not warn: %v", Warnings(cfg))
+	}
+}
+
+// A monitor source lives in PipeWire's graph, not on a card, so no /dev/snd node can grant or
+// deny one. Accepting a list would let a config look like it had narrowed this to one device
+// while doing nothing at all.
+func TestAudio_MonitorRejectsADeviceList(t *testing.T) {
+	cfg := baseCfg()
+	cfg.AudioMeta.Monitor = schema.AudioDevice{Devices: []string{"/dev/snd/controlC0"}}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "means nothing here") {
+		t.Fatalf("want a refusal for a Monitor device list, got: %v", err)
+	}
+}
+
+// A guest sees an emulated sound card, not the host's PipeWire graph, so there is nothing for
+// it to monitor and the field is refused rather than silently ignored on the way to qemu.
+func TestAudio_MonitorRefusedOnAVMApp(t *testing.T) {
+	cfg := baseVM()
+	cfg.AudioMeta.Monitor = schema.AudioDevice{Default: true}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "AudioMeta.Monitor") {
+		t.Fatalf("want a refusal for Monitor on a VM app, got: %v", err)
+	}
+}
+
+// Monitor alone still puts the socket in the container: it is a session-graph capability, so
+// it is the socket that delivers it, with or without a playback grant.
+func TestAudio_MonitorAloneIsASessionGrant(t *testing.T) {
+	cfg := baseCfg()
+	cfg.AudioMeta.Monitor = schema.AudioDevice{Default: true}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Monitor on its own should validate: %v", err)
+	}
+	joined := strings.Join(Warnings(cfg), "\n")
+	if !strings.Contains(joined, "Microphone: none is not yet enforced") {
+		t.Errorf("the socket is mounted for Monitor too, so the capture caveat applies: %v", Warnings(cfg))
 	}
 }

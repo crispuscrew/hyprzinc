@@ -143,9 +143,10 @@ Configs:                         # files the app ships with, from apps/<app>/con
 Volumes: []                      # explicit host bind mounts are wired; see below
 Keys: []                         # SSH/GPG convenience mounts; see below
 HostTheme: true                  # mount the curated host theme bundle read-only (5.6)
-AudioMeta:                       # one grant per direction; absent means none
+AudioMeta:                       # one grant per capability; absent means none
   Playback: default              # none | default | a list of /dev/snd nodes
   Microphone: none               # same three forms
+  Monitor: none                  # record what OTHER apps play; none | default only
 Capabilities: []                 # extra `--cap-add` entries, on top of the drop-all baseline
 ```
 
@@ -579,6 +580,23 @@ and they are spelled differently because they are enforced differently:
 | `none`, or absent | not granted | nothing to enforce |
 | `default` | the session's own device, via the PipeWire socket | see below |
 | `[/dev/snd/...]` | exactly these ALSA nodes | the kernel, through `--device` |
+
+There are three capabilities, not two. `Playback` and `Microphone` are the obvious pair.
+`Monitor` is the third: a PipeWire sink carries a `.monitor` source, a readable tap on
+everything mixed into it, so a client on the session socket can record **what other apps are
+playing**. That is what a screen recorder uses, and it crosses the boundary between two
+sandboxed apps rather than between an app and a host device, since a music player and a video
+call share a sink.
+
+`Monitor` takes only `none` or `default`: a monitor source is part of PipeWire's graph and no
+`/dev/snd` node carries one, so a device list there would look like a narrowing while doing
+nothing, and is refused. It is also refused for a VM app, whose guest sees an emulated sound
+card rather than the host graph.
+
+Note what `Monitor` is not: it is a capability on the app doing the recording, never a
+protection on the app being recorded. Zinc describes what an app may do, so there is no way
+for a music player to declare its own output private - whether anything taps its sink is
+decided by the other app's grant, in the other app's config.
 
 **The device-list form is the strong one.** Those nodes are passed with `--device` and
 nothing else on the sound subsystem is reachable, so an app granted one microphone cannot

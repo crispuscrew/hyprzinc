@@ -265,7 +265,7 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 	// `Playback: default` with `Microphone: none` is a claim the runtime cannot yet keep.
 	// validate.Warnings says so. The device-list form has no such gap, because the kernel is
 	// what enforces it.
-	if (cfg.AudioMeta.Playback.Default || cfg.AudioMeta.Microphone.Default) && opt.RuntimeDir != "" {
+	if audioUsesSession(cfg.AudioMeta) && opt.RuntimeDir != "" {
 		pipewireSock := filepath.Join(opt.RuntimeDir, "pipewire-0")
 		args = append(args, "-v", pipewireSock+":"+filepath.Join(ctrXDGRuntime, "pipewire-0")+":ro")
 		exportRuntimeDir()
@@ -728,4 +728,11 @@ func audioDevices(audio schema.AudioMeta) []string {
 		}
 	}
 	return devices
+}
+
+// audioUsesSession reports whether any direction asked for the session's own devices, which
+// is what puts the PipeWire socket in the container. Monitor counts: a .monitor source is
+// part of PipeWire's graph, so the socket is the only thing that can deliver it.
+func audioUsesSession(audio schema.AudioMeta) bool {
+	return audio.Playback.Default || audio.Microphone.Default || audio.Monitor.Default
 }

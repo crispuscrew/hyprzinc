@@ -214,6 +214,8 @@ func checkContainerOnlyFields(cfg schema.AppConfig, add addFunc) {
 			"sharing a host directory into a guest needs virtiofs, which this build does not implement"},
 		{len(cfg.Configs) > 0, "Configs",
 			"sharing a host directory into a guest needs virtiofs, which this build does not implement"},
+		{!cfg.AudioMeta.Monitor.IsZero(), "AudioMeta.Monitor",
+			"a monitor source is a tap on the host's PipeWire mix, and a guest sees an emulated sound card rather than the host graph, so there is nothing there for it to record"},
 		{len(cfg.AudioMeta.Playback.Devices) > 0 || len(cfg.AudioMeta.Microphone.Devices) > 0, "AudioMeta device lists",
 			"a guest cannot be handed a host character device; guest audio is routed through the session's PipeWire, so use `default` (or `none`)"},
 		{cfg.HostTheme, "HostTheme",

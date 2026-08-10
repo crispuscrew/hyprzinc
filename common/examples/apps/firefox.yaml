@@ -47,6 +47,9 @@ AudioMeta:
   #     - /dev/snd/controlC0
   #     - /dev/snd/pcmC0D0c
   Microphone: none
+  # Recording what OTHER apps are playing is a third capability, and the socket grants it
+  # today whatever this says. Declared so the config states the intent.
+  Monitor: none
 
 HostTheme: true                  # share the host's theme
 

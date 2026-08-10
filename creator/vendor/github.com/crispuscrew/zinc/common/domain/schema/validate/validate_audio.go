@@ -19,6 +19,14 @@ const alsaRoot = "/dev/snd/"
 func checkAudio(cfg schema.AppConfig, add addFunc) {
 	checkAudioDevice("Playback", cfg.AudioMeta.Playback, add)
 	checkAudioDevice("Microphone", cfg.AudioMeta.Microphone, add)
+	checkAudioDevice("Monitor", cfg.AudioMeta.Monitor, add)
+	if len(cfg.AudioMeta.Monitor.Devices) > 0 {
+		// The device-list form is the strong one everywhere else, and here it is meaningless.
+		// A monitor source is a tap on PipeWire's mix; the card knows nothing about it, so
+		// there is no /dev/snd node that could grant or deny it. Accepting a list would let a
+		// config look like it had narrowed this to one device when it had done nothing.
+		add("AudioMeta.Monitor: a device list means nothing here - a .monitor source is part of PipeWire's graph, not a card, so no /dev/snd node carries one; write none or default")
+	}
 }
 
 func checkAudioDevice(field string, dev schema.AudioDevice, add addFunc) {
@@ -46,27 +54,44 @@ func checkAudioDevice(field string, dev schema.AudioDevice, add addFunc) {
 // audioWarnings surfaces the gap between what a container config says about audio and what
 // the runtime can currently hold it to.
 //
-// `default` mounts the session's PipeWire socket, and PipeWire grants that client capture
-// regardless of which direction the config asked for. So on a container, `Playback: default`
-// with `Microphone: none` describes an app that cannot listen, and the app can listen. Saying
-// this out loud is the whole reason the two directions are separate fields: the old single
-// flag could not even express the claim, let alone fail to keep it.
+// Two separate gaps, reported separately because a reader can act on one and not the other.
 //
-// A device list carries no such caveat, on either side.
+// The first is direction. `default` mounts the session's PipeWire socket, and PipeWire grants
+// that client capture as well as playback, so `Playback: default` with `Microphone: none`
+// describes an app that cannot listen and does not stop it listening.
+//
+// The second is Monitor. The socket exposes every sink's `.monitor` source, so it also grants
+// "record what every OTHER app is playing". An app that declares `Monitor: default` is simply
+// describing what it gets, and gets no warning; one that says `none` is making a promise the
+// runtime cannot keep, and is told so.
+//
+// Neither caveat applies to a device list. ALSA nodes are the card, not PipeWire's graph, so
+// there are no other applications' streams there to open.
 func audioWarnings(cfg schema.AppConfig) []string {
 	if cfg.Type != schema.ZincContainer {
-		return nil // a guest gets a playback-only sound device, which the VM runner enforces
+		return nil // a guest gets a codec chosen by the runner, and cannot see the host graph
 	}
-	if !cfg.AudioMeta.Playback.Default && !cfg.AudioMeta.Microphone.Default {
+	if !usesSessionAudio(cfg.AudioMeta) {
 		return nil
 	}
-	if cfg.AudioMeta.Microphone.Default {
-		return nil // the config asked to be heard, so there is no gap between claim and grant
+	var warns []string
+	if !cfg.AudioMeta.Microphone.Default {
+		warns = append(warns,
+			"AudioMeta: Playback: default mounts the session's PipeWire socket, which grants this app "+
+				"microphone capture too. Microphone: none is not yet enforced for a container. Name exact "+
+				"/dev/snd nodes instead if the app must not be able to listen.")
 	}
-	return []string{
-		"AudioMeta: Playback: default mounts the session's PipeWire socket, which grants this app " +
-			"microphone capture too, and the monitor sources that record what other apps are playing. " +
-			"Microphone: none is not yet enforced for a container. Name exact /dev/snd nodes instead if " +
-			"the app must not be able to listen.",
+	if !cfg.AudioMeta.Monitor.Default {
+		warns = append(warns,
+			"AudioMeta: the PipeWire socket also exposes every sink's .monitor source, so this app can record "+
+				"what OTHER apps are playing. Monitor: none is not yet enforced for a container. A device list "+
+				"avoids it, because ALSA nodes carry no other application's stream.")
 	}
+	return warns
+}
+
+// usesSessionAudio reports whether any direction asked for the session's own devices, which
+// is what puts the PipeWire socket in the container and brings both caveats with it.
+func usesSessionAudio(audio schema.AudioMeta) bool {
+	return audio.Playback.Default || audio.Microphone.Default || audio.Monitor.Default
 }
