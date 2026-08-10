@@ -63,6 +63,18 @@ func (svc Service) address(name string) paths.Address {
 // opt is taken and returned by value, so a dependency launched from the same launch never
 // inherits the socket of the app that depends on it - a per-app result must not travel down a
 // recursion as though it were a host fact.
+// withBundle resolves this app's bundle directory, which is where its authored Configs live.
+//
+// It has to happen here rather than in the argv builder because by then AppNameID carries the
+// instance: `zcr run notes@work` rewrites it to "notes.work", and a bundle is per APP, since a
+// config file is content the app was authored with and every instance reads the same one.
+// Deriving it downstream sent every instanced app at apps/notes.work/configs, which nothing
+// creates. opt is taken and returned by value, so a dependency gets its own.
+func (svc Service) withBundle(cfg schema.AppConfig, opt options.HostOptions) options.HostOptions {
+	opt.BundleDir = paths.BundleDir(opt.ConfigHome, svc.address(cfg.AppNameID).App)
+	return opt
+}
+
 func (svc Service) withDisplay(cfg schema.AppConfig, opt options.HostOptions) (options.HostOptions, error) {
 	if svc.display == nil {
 		return opt, nil
@@ -117,6 +129,7 @@ func (svc Service) Plan(cfg schema.AppConfig, opt options.HostOptions) ([]ports.
 	if err := validate.Validate(cfg); err != nil { // never compose commands from unvalidated config (section 3)
 		return nil, fmt.Errorf("%s: %w", cfg.AppNameID, err)
 	}
+	opt = svc.withBundle(cfg, opt) // the dry run must show the same source the launch mounts
 	if err := checkNetwork(cfg); err != nil {
 		return nil, err
 	}
@@ -158,6 +171,7 @@ func (svc Service) launch(cfg schema.AppConfig, opt options.HostOptions, chain [
 	if err := validate.Validate(cfg); err != nil { // launch-time check catches drift (section 3)
 		return fmt.Errorf("%s: %w", cfg.AppNameID, err)
 	}
+	opt = svc.withBundle(cfg, opt)
 	if err := checkNetwork(cfg); err != nil { // fail closed on not-yet-supported network shapes
 		return err
 	}

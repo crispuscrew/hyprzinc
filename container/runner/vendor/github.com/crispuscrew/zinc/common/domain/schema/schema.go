@@ -474,12 +474,11 @@ type NotificationMeta struct {
 	AllowedLinks     bool `yaml:"AllowedLinks"`
 }
 
-// Readable drop, because u cannot mount something u cannot read
 // ConfigFile is one file the app ships with: authored alongside the app, kept in the app's
 // own bundle directory, and mounted into the container at launch.
 //
 // It has its own type rather than borrowing Volume, which is what it did until schema v3.
-// Sharing that struct meant three of its six fields were meaningless here - HostMounted was
+// Sharing that struct meant four of its seven fields were meaningless here - HostMounted was
 // documented as ignored, SizeLimited and SizeLimitMiB were validated and could never apply to
 // a single file - and, worse, the one field they did share carried opposite rules: a Volume's
 // HostMount must be an absolute host path, while a Config's had to be relative and was
@@ -606,10 +605,14 @@ func (dev *AudioDevice) UnmarshalYAML(node *yaml.Node) error {
 // writes an explicit `false` for every other denial instead of leaving the key out.
 func (dev AudioDevice) MarshalYAML() (any, error) {
 	switch {
-	case dev.Default:
-		return audioDefault, nil
+	// Devices first, deliberately. Validation refuses a value with both set, so this only
+	// decides a case that cannot reach disk through zc - but store.Marshal is exported and
+	// used unvalidated for the $EDITOR round trip, and the narrow form is the safe tie-break
+	// in the one function whose entire job is to not widen a grant.
 	case len(dev.Devices) > 0:
 		return dev.Devices, nil
+	case dev.Default:
+		return audioDefault, nil
 	}
 	return audioNone, nil
 }

@@ -562,8 +562,8 @@ func TestAppRunArgs_KeepUserIDIsThePodsWhenFiltered(t *testing.T) {
 // fails with podman's bare "image not known" - a sentence that does not say the image was the
 // user's to build. The hint has to name the command.
 func TestHelperImageHint_NamesTheBuildCommand(t *testing.T) {
-	cmd := ports.Command{Args: []string{"run", "--rm", "zinc/netfilter:local", "true"}}
-	got := helperImageHint(cmd, []byte("Error: zinc/netfilter:local: image not known"))
+	cmd := ports.Command{Args: []string{"run", "--rm", "localhost/zinc/netfilter:local", "true"}}
+	got := helperImageHint(cmd, []byte("Error: localhost/zinc/netfilter:local: image not known"))
 	if !strings.Contains(got, "make -C container/runner netfilter-image") {
 		t.Errorf("hint does not name the build command: %q", got)
 	}
@@ -580,7 +580,7 @@ func TestHelperImageHint_NotForAnAppsOwnImage(t *testing.T) {
 
 // Any other failure must not acquire an image hint.
 func TestHelperImageHint_OnlyForMissingImages(t *testing.T) {
-	cmd := ports.Command{Args: []string{"run", "zinc/netfilter:local", "nft", "-f", "-"}}
+	cmd := ports.Command{Args: []string{"run", "localhost/zinc/netfilter:local", "nft", "-f", "-"}}
 	if got := helperImageHint(cmd, []byte("Error: nft: syntax error")); got != "" {
 		t.Errorf("hint offered for an unrelated failure: %q", got)
 	}
@@ -661,14 +661,14 @@ func TestAppRunArgs_ConfigsAreMountedFromTheBundle(t *testing.T) {
 		{BundlePath: "settings.json", InnerMount: "/etc/app/settings.json"},
 		{BundlePath: "sub/state.ini", InnerMount: "/etc/app/state.ini", Writable: true},
 	}
-	args, err := Runtime{}.AppRunArgs(cfg, options.HostOptions{ConfigHome: "/home/u/.config"}, nil)
+	args, err := Runtime{}.AppRunArgs(cfg, options.HostOptions{BundleDir: "/home/u/.config/zinc/apps/demo/configs"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
-		"/home/u/.config/zinc/apps/demo/configs/settings.json:/etc/app/settings.json:ro",
-		"/home/u/.config/zinc/apps/demo/configs/sub/state.ini:/etc/app/state.ini:rw",
+		"/home/u/.config/zinc/apps/demo/configs/settings.json:/etc/app/settings.json:ro,noexec",
+		"/home/u/.config/zinc/apps/demo/configs/sub/state.ini:/etc/app/state.ini:rw,noexec",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing config mount %q in:\n%s", want, joined)
@@ -692,7 +692,11 @@ func TestAppRunArgs_ConfigWithoutABundleRootIsRefused(t *testing.T) {
 func TestAppRunArgs_EnvIsSortedAndPrecedesTheRunnersOwn(t *testing.T) {
 	cfg := validCfg()
 	cfg.Env = map[string]string{"ZED": "3", "ALPHA": "1", "MID": "2"}
-	args, err := Runtime{}.AppRunArgs(cfg, options.HostOptions{}, nil)
+	// Real host options, so the runner actually emits its own -e flags and the ordering claim
+	// is asserted against something. With an empty HostOptions it emits none and this test
+	// proved only that sorting works.
+	opt := options.HostOptions{RuntimeDir: "/run/user/1000", WaylandDisplay: "wayland-1"}
+	args, err := Runtime{}.AppRunArgs(cfg, opt, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -700,6 +704,14 @@ func TestAppRunArgs_EnvIsSortedAndPrecedesTheRunnersOwn(t *testing.T) {
 	for index, arg := range args {
 		if arg == "-e" && index+1 < len(args) {
 			got = append(got, args[index+1])
+		}
+	}
+	if !slices.Contains(got, "XDG_RUNTIME_DIR=/run/zinc") {
+		t.Fatalf("the runner did not export its own variables, so ordering is untested: %v", got)
+	}
+	for _, runnerOwned := range []string{"XDG_RUNTIME_DIR=/run/zinc", "WAYLAND_DISPLAY=wayland-1"} {
+		if slices.Index(got, runnerOwned) < slices.Index(got, "ZED=3") {
+			t.Errorf("%q must come after the config's own so podman's last-wins keeps the runner's: %v", runnerOwned, got)
 		}
 	}
 	want := []string{"ALPHA=1", "MID=2", "ZED=3"}
@@ -723,5 +735,22 @@ func TestAppRunArgs_ReadOnlyRootfs(t *testing.T) {
 	}
 	if !slices.Contains(args, "--read-only") {
 		t.Errorf("ReadOnlyRootfs did not reach the argv: %v", args)
+	}
+}
+
+// A bundle is per APP. By the time argv is built, AppNameID carries the instance, so deriving
+// the source here sent `zcr run notes@work` at apps/notes.work/configs, which nothing creates.
+func TestAppRunArgs_ConfigSourceComesFromTheResolvedBundle(t *testing.T) {
+	cfg := validCfg()
+	cfg.AppNameID = "notes.work" // what main.go rewrites an instanced launch to
+	cfg.Configs = []schema.ConfigFile{{BundlePath: "app.toml", InnerMount: "/etc/app.toml"}}
+	opt := options.HostOptions{BundleDir: "/home/u/.config/zinc/apps/notes/configs"}
+	args, err := Runtime{}.AppRunArgs(cfg, opt, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/home/u/.config/zinc/apps/notes/configs/app.toml:/etc/app.toml:ro,noexec"
+	if !slices.Contains(args, want) {
+		t.Errorf("config mount = %v, want one at %q", args, want)
 	}
 }

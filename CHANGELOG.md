@@ -36,6 +36,21 @@ tracked in [RELEASES.md](RELEASES.md).
   being absolute, meaning a placeholder in a `Config` could never have worked.
 
 
+- **Schema v3: `Env` and `ReadOnlyRootfs`.** There was no way to give an app an environment
+  variable at all: `ImageMeta.Install` becomes a `RUN` layer rather than an `ENV`, so an app
+  needing `LANG` or `TZ` simply could not be configured. `Env` is a mapping rather than a list
+  of `KEY=VALUE` strings, so a duplicate key cannot be written, and it is emitted in sorted
+  order because a Go map has none and this argv is what `--dry-run` prints and what the
+  reproducible-build check compares. `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` and
+  `DBUS_SESSION_BUS_ADDRESS` are refused there: they describe what the runner actually built,
+  so overriding one cannot make the new value true, only send the app somewhere there is
+  nothing. The runner's own exports are emitted last, so podman's last-wins keeps them.
+
+  `ReadOnlyRootfs` maps to podman's `--read-only`. `--read-only-tmpfs` defaults true, so
+  `/dev`, `/dev/shm`, `/run`, `/tmp` and `/var/tmp` stay writable and an app needing scratch
+  space still runs; what stops is writing into the image at runtime. Both are refused for VM
+  apps, whose guest takes its environment from its own init and mounts its own root.
+
 - **Schema v3: `DisplayMeta.RequireSecurityContext`.** A compositor without
   `wp_security_context_v1` gets handed the raw socket, and the container is labelled
   `zinc.wayland=passthrough` to record that the app is a client the compositor cannot tell

@@ -161,7 +161,13 @@ func TestVerifyBase_RefusesAnImageThatReferencesAnotherFile(t *testing.T) {
 	}{
 		{"backing file", qcowHeader(3, 0x200, 0), "a backing file"},
 		{"backing file, v2", qcowHeader(2, 0x200, 0), "a backing file"},
-		{"external data file", qcowHeader(3, 0, 1<<1), "an external data file"},
+		// The literal is deliberate. Deriving it from the production constant would make this
+		// test agree with the code by construction, which is exactly how the wrong bit (1<<1,
+		// the corrupt flag) shipped green: 0x04 is what qemu-img actually writes at offset 72
+		// for `-o data_file=x.raw,data_file_raw=on`.
+		{"external data file", qcowHeader(3, 0, 0x04), "an external data file"},
+		// The corrupt flag is a different bit and must not be mistaken for this one.
+		{"corrupt flag is not a data file", qcowHeader(3, 0, 0x02), ""},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -176,6 +182,12 @@ func TestVerifyBase_RefusesAnImageThatReferencesAnotherFile(t *testing.T) {
 			// The digest is correct, which is the point: the pin matches and the image is
 			// still refused.
 			err = VerifyBase(base, digest)
+			if testCase.want == "" {
+				if err != nil {
+					t.Fatalf("this flag is not an external data file and must not be refused: %v", err)
+				}
+				return
+			}
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("want a refusal naming %q, got: %v", testCase.want, err)
 			}

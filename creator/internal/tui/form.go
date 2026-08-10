@@ -481,6 +481,12 @@ func (frm *formModel) toConfig() schema.AppConfig {
 		cfg.Capabilities = nil
 		cfg.NetworkMeta.NetworkLists = nil
 		cfg.Volumes, cfg.Configs, cfg.Keys = nil, nil, nil
+		// Everything else a VM app refuses, so switching type does not fail the save on a
+		// field the VM form never showed. Kept in step with checkContainerOnlyFields.
+		cfg.Env, cfg.ReadOnlyRootfs = nil, false
+		cfg.DisplayMeta.RequireSecurityContext = false
+		cfg.AudioMeta.Monitor = schema.AudioDevice{}
+		cfg.AudioMeta.Playback.Devices, cfg.AudioMeta.Microphone.Devices = nil, nil
 		cfg.HostTheme = false
 		cfg.DBusMeta = schema.DBusMeta{}
 		cfg.InternalUserMeta = schema.InternalUserMeta{}
@@ -552,8 +558,12 @@ func splitLines(text string) []string {
 func setAudio(dev *schema.AudioDevice, granted bool) {
 	switch {
 	case !granted:
-		*dev = schema.AudioDevice{}
-	case dev.IsZero():
-		*dev = schema.AudioDevice{Default: true}
+		// Remember the devices, so turning the row back on restores what was authored rather
+		// than replacing it with the session default. Off-then-on used to WIDEN a grant from
+		// one kernel-enforced microphone to every device PipeWire can see, in a row that read
+		// "true" both before and after.
+		dev.Default = false
+	case len(dev.Devices) == 0:
+		dev.Default = true
 	}
 }

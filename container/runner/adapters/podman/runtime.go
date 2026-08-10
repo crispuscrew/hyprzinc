@@ -24,7 +24,6 @@ import (
 	"github.com/crispuscrew/zinc/common/domain/schema"
 	"github.com/crispuscrew/zinc/container/runner/domain/derived"
 	"github.com/crispuscrew/zinc/container/runner/domain/options"
-	"github.com/crispuscrew/zinc/container/runner/domain/paths"
 	"github.com/crispuscrew/zinc/container/runner/ports"
 )
 
@@ -210,6 +209,19 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 	args = append(args, healthArgs(cfg.StartConditions)...)
 
 	// Network attachment is the enforcer's decision (section 5.3) - we only splice it in.
+	// The app's own environment. Emitted here, above everything the runner exports, because
+	// podman lets a later -e win: the runner's variables describe what it actually built (the
+	// runtime dir it mounted, the socket it created, the bus a proxy is serving), so they have
+	// to be the ones that survive. validate refuses those three names as well, but that is the
+	// second lock, not the only one - which is what this comment used to claim while the code
+	// did the opposite.
+	//
+	// Sorted, because a Go map has no order and this argv is what --dry-run prints, what the
+	// reproducible-build check compares, and what a reviewer reads.
+	for _, name := range slices.Sorted(maps.Keys(cfg.Env)) {
+		args = append(args, "-e", name+"="+cfg.Env[name])
+	}
+
 	args = append(args, netFlags...)
 
 	// XDG_RUNTIME_DIR is exported once, and only when we actually mount a socket under
@@ -256,17 +268,6 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		args = append(args, "-v", opt.ThemeBundleDir+":"+ctrThemeDir+":ro")
 	}
 
-	// The app's own environment, before anything the runner exports. Zinc's variables
-	// describe what it actually constructed, so they must win; the validator already refuses
-	// those names here, and emitting the config's first means a future export cannot be
-	// shadowed by one either.
-	//
-	// Sorted, because a Go map has no order and this argv is what --dry-run prints, what the
-	// reproducible-build check compares, and what a reviewer reads.
-	for _, name := range slices.Sorted(maps.Keys(cfg.Env)) {
-		args = append(args, "-e", name+"="+cfg.Env[name])
-	}
-
 	// A read-only root filesystem. Podman keeps a writable tmpfs on /dev, /dev/shm, /run,
 	// /tmp and /var/tmp (--read-only-tmpfs defaults true), so an app that only needs scratch
 	// space still runs; what stops is writing into the image itself.
@@ -301,13 +302,16 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 	// stays the relative thing validation checks. Rewriting it to an absolute path on load
 	// would make the config fail its own validator on the next read.
 	for _, configFile := range cfg.Configs {
-		bundle := paths.BundleDir(opt.ConfigHome, cfg.AppNameID)
+		bundle := opt.BundleDir
 		if bundle == "" {
-			return nil, fmt.Errorf("%s: cannot resolve the app's bundle directory (XDG_CONFIG_HOME and $HOME are both unset), so Configs[%q] has no source", cfg.AppNameID, configFile.BundlePath)
+			return nil, fmt.Errorf("%s: no bundle directory resolved for this app, so Configs[%q] has no source", cfg.AppNameID, configFile.BundlePath)
 		}
-		mountOpts := "ro"
+		// noexec, as Volumes get. ConfigFile deliberately has no Executable field because a
+		// config file is data, and podman's bind default is exec, so without this an authored
+		// file lands executable with nothing in the schema able to say otherwise.
+		mountOpts := "ro,noexec"
 		if configFile.Writable {
-			mountOpts = "rw"
+			mountOpts = "rw,noexec"
 		}
 		args = append(args, "-v", filepath.Join(bundle, configFile.BundlePath)+":"+configFile.InnerMount+":"+mountOpts)
 	}
@@ -519,7 +523,7 @@ func helperImageHint(cmd ports.Command, out []byte) string {
 		return ""
 	}
 	for _, arg := range cmd.Args {
-		if strings.HasPrefix(arg, "zinc/") {
+		if strings.HasPrefix(arg, "zinc/") || strings.HasPrefix(arg, "localhost/zinc/") {
 			return "\n  hint: " + arg + " is Zinc's own helper image and is built locally, never pulled." +
 				"\n        build it once with: make -C container/runner netfilter-image"
 		}

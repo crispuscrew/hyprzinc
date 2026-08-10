@@ -200,7 +200,7 @@ func cmdRun(svc app.Service, opt options.HostOptions, argv []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loadApp(svc, name)
+	cfg, err := loadLaunchable(svc, name)
 	if err != nil {
 		return err
 	}
@@ -376,7 +376,7 @@ func cmdBuild(svc app.Service, argv []string) error {
 	if len(argv) != 1 {
 		return fmt.Errorf("usage: zcr build <app>")
 	}
-	cfg, err := loadApp(svc, argv[0])
+	cfg, err := loadLaunchable(svc, argv[0])
 	if err != nil {
 		return err
 	}
@@ -488,7 +488,7 @@ func cmdTerm(svc app.Service, opt options.HostOptions, argv []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loadApp(svc, name)
+	cfg, err := loadLaunchable(svc, name)
 	if err != nil {
 		return err
 	}
@@ -614,13 +614,32 @@ func loadApp(svc app.Service, arg string) (schema.AppConfig, error) {
 		// launch is exactly the mis-enforcement the network model refuses elsewhere.
 		return schema.AppConfig{}, fmt.Errorf("app %q is a VM app (Type: %s); run it with zvr", cfg.AppNameID, cfg.Type)
 	}
-	// Validate here, not only in Launch. A store app arrives with its name already checked
-	// against its filename, but the path form (`zcr stop ./x.yaml`) accepts whatever the
-	// file claims, and AppNameID is not just a label: it becomes a container name, a pod
-	// name and a path segment inside an `rm -rf`. Unvalidated, "--all" turns the teardown's
-	// `podman rm -f --ignore <app>` into `podman rm -f --ignore --all`, and "../.." walks
-	// that rm out of the app's own socket directory. Every verb that loads a config goes
-	// through here, so one check covers stop, restart, logs, inspect, where and net.
+	// Screen the name, always. A store app arrives with its name already checked against its
+	// filename, but the path form (`zcr stop ./x.yaml`) accepts whatever the file claims, and
+	// AppNameID is not just a label: it becomes a container name, a pod name and a path
+	// segment inside an `rm -rf`. Unvalidated, "--all" turns the teardown's
+	// `podman rm -f --ignore <app>` into `podman rm -f --ignore --all`, and "../.." walks that
+	// rm out of the app's own socket directory.
+	//
+	// Only the name, though. Full validation belongs to the verbs that COMPOSE something from
+	// a config, and loadApp is also how the verbs that act on an already-running app read it.
+	// Validating everything here means any rule this build tightened - a schema bump included,
+	// and v3 is one - makes every running app unstoppable except with raw podman, because
+	// `zcr stop` would refuse the same file the launch accepted yesterday. Refusing to START a
+	// config is a safety property; refusing to STOP one is just a wedged app.
+	if err := validate.AppName(cfg.AppNameID); err != nil {
+		return schema.AppConfig{}, fmt.Errorf("%s: %w", arg, err)
+	}
+	return cfg, nil
+}
+
+// loadLaunchable is loadApp plus full validation, for the verbs that build an argv, an image
+// or a ruleset from a config rather than acting on one that already exists.
+func loadLaunchable(svc app.Service, arg string) (schema.AppConfig, error) {
+	cfg, err := loadApp(svc, arg)
+	if err != nil {
+		return schema.AppConfig{}, err
+	}
 	if err := validate.Validate(cfg); err != nil {
 		return schema.AppConfig{}, err
 	}

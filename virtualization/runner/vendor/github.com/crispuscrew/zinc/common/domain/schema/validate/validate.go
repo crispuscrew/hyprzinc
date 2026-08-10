@@ -50,6 +50,8 @@ func Validate(cfg schema.AppConfig) error {
 	}
 	checkKeys(cfg.Keys, add)
 	checkAudio(cfg, add)
+	checkDisplay(cfg, add)
+	checkEnv(cfg.Env, add)
 	checkCapabilities(cfg.Capabilities, add)
 	checkNetworkCapabilities(cfg, add)
 

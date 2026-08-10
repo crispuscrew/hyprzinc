@@ -1,4 +1,4 @@
-# Zinc app definition (schema v2). Copy this as a starting point for a new
+# Zinc app definition (schema v3). Copy this as a starting point for a new
 # container app; see firefox-broken.yaml for what Validate rejects.
 SchemaVersion: 3
 Type: ZincContainer          # container app (VM support: ZincVirtualization, later)

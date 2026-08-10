@@ -146,3 +146,32 @@ func TestAudio_MonitorAloneIsASessionGrant(t *testing.T) {
 		t.Errorf("the socket is mounted for Monitor too, so the capture caveat applies: %v", Warnings(cfg))
 	}
 }
+
+// The field an entry sits in has to mean something. Every named node is passed with --device
+// and the runner unions the two lists, so a capture PCM under Playback would grant a
+// microphone to a config that reads "output only", with no warning because nothing asked for
+// `default`. The list form is supposed to be the ENFORCED one; a label the kernel never sees
+// is not enforcement.
+func TestAudio_DeviceDirectionMustMatchTheField(t *testing.T) {
+	cfg := baseCfg()
+	cfg.AudioMeta.Playback = schema.AudioDevice{Devices: []string{"/dev/snd/controlC0", "/dev/snd/pcmC0D0c"}}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "CAPTURE device") {
+		t.Fatalf("a capture PCM under Playback should be refused, got: %v", err)
+	}
+
+	cfg = baseCfg()
+	cfg.AudioMeta.Microphone = schema.AudioDevice{Devices: []string{"/dev/snd/pcmC1D3p"}}
+	err = Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "PLAYBACK device") {
+		t.Fatalf("a playback PCM under Microphone should be refused, got: %v", err)
+	}
+
+	// The right way round, with the shared control node in both, must pass.
+	cfg = baseCfg()
+	cfg.AudioMeta.Playback = schema.AudioDevice{Devices: []string{"/dev/snd/controlC1", "/dev/snd/pcmC1D3p"}}
+	cfg.AudioMeta.Microphone = schema.AudioDevice{Devices: []string{"/dev/snd/controlC0", "/dev/snd/pcmC0D0c"}}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("correctly directed nodes were rejected: %v", err)
+	}
+}

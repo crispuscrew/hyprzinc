@@ -3,7 +3,6 @@ package validate
 import (
 	"regexp"
 	"sort"
-	"strings"
 )
 
 // envNameRE is the POSIX environment-name charset. Anything else is not portable and, more to
@@ -36,10 +35,11 @@ func checkEnv(env map[string]string, add addFunc) {
 		case reservedEnv[name] != "":
 			add("Env[%q]: cannot be set here - %s, and overriding it points the app at something that is not there", name, reservedEnv[name])
 		}
-		if value := env[name]; hasControl(value) {
-			add("Env[%q]: the value must not contain control characters", name)
-		} else if strings.Contains(value, "\n") {
-			add("Env[%q]: the value must be a single line", name)
+		if hasControl(env[name]) {
+			// hasControl already covers a newline, which is the case that matters: the value
+			// becomes one -e argument, and a config whose environment spans lines is not one
+			// anybody can review.
+			add("Env[%q]: the value must be a single line with no control characters", name)
 		}
 	}
 }

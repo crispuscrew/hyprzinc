@@ -59,8 +59,9 @@ const ctrRuntimeRoot = "/run/zinc-runtime"
 // argument to an `rm -rf` in a helper that has the host XDG_RUNTIME_DIR bind-mounted
 // read-write, so a name that walks out of the app's own directory would delete the session's
 // sockets. Validation refuses such a name long before here (nameRE has no '/' and cannot
-// start with '.'), and the callers skip the step on empty, so this is the second lock on a
-// door that is already shut.
+// start with '.'), and Teardown skips the step on empty. Prepare does not: an empty operand
+// makes mkdir fail and the launch fail closed, which is the right outcome but is worth knowing
+// is where it comes from.
 func ctrSocketDir(app string) string {
 	dir := filepath.Join(ctrRuntimeRoot, "zinc", "dbus", app)
 	if !strings.HasPrefix(dir, ctrRuntimeRoot+"/zinc/dbus/") {

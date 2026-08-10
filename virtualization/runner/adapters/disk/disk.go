@@ -106,7 +106,12 @@ const (
 	qcowBackingOffsetAt = 8
 	qcowIncompatibleAt  = 72
 	qcowHeaderProbe     = 80
-	qcowExternalDataBit = 1 << 1
+	// Bit 2 of incompatible_features, per the qcow2 spec (qemu calls it
+	// QCOW2_INCOMPAT_DATA_FILE_BITNR = 2). Bit 1 is the "corrupt" flag and is NOT this;
+	// getting that wrong silently passes every external-data-file image, which is the whole
+	// case this check exists for. Confirmed against a real image: `qemu-img create -f qcow2
+	// -o data_file=x.raw,data_file_raw=on` writes 0x04 at offset 72.
+	qcowExternalDataBit = 1 << 2
 )
 
 var qcowMagic = []byte{'Q', 'F', 'I', 0xfb}

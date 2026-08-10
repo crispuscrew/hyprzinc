@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/crispuscrew/zinc/common/domain/schema"
@@ -31,13 +32,17 @@ func checkVolume(index int, volume schema.Volume, add addFunc) {
 // bus socket, the compositor socket, and the per-app sockets of every OTHER Zinc app; /proc
 // and /sys are host state a sandbox has no business reading wholesale.
 //
+// The list is literal paths rather than $XDG_RUNTIME_DIR, because this package is pure and
+// cannot read the environment. /run/user is where a rootless session puts it on every system
+// this targets; a session pointed elsewhere is not covered, which is worth knowing.
+//
 // This is the one place the "an explicit mount is an explicit grant" principle does not
 // apply. A config naming the raw bus reads as an ordinary directory mount, and afterwards
 // every surface Zinc offers still reports the app as having no bus: `zcr where` says
 // bus: none, `zcr bus` shows no row, and the container is still labelled with a Wayland
 // security context it is not using. The grant is invisible in exactly the place a reviewer
 // would look, so it is refused instead of trusted to be noticed.
-var brokeredPrefixes = []string{"/run/user/", "/proc", "/sys"}
+var brokeredPrefixes = []string{"/run/user", "/proc", "/sys", "/dev"}
 
 // checkHostSource applies the host-path policy shared by every host-side mount source.
 func checkHostSource(list string, index int, source string, add addFunc) {
@@ -55,11 +60,19 @@ func checkHostSource(list string, index int, source string, add addFunc) {
 		add("%s[%d].HostMount %q: must not contain '..' segments - the path that gets mounted should be the path that was reviewed", list, index, source)
 		return
 	}
+	// Clean first, then compare SEGMENTS. A raw prefix test on the written path is bypassed by
+	// any spelling the kernel resolves to the same place: "//proc", "/./proc",
+	// "/run//user/1000" and "/run/./user/1000" all reach the directory the rule forbids while
+	// failing a HasPrefix against "/proc" or "/run/user". It also refuses things it should not,
+	// since "/sys" as a raw prefix matches "/sysroot/home/me", which is the real root on an
+	// ostree system.
+	cleaned := filepath.Clean(source)
 	for _, prefix := range brokeredPrefixes {
-		if source == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(source, prefix) {
-			add("%s[%d].HostMount %q: %s holds the sockets Zinc brokers (the session bus, the compositor, and other apps' filtered sockets); mounting it hands the app the unfiltered capability while every Zinc report still says it has none. Ask for the capability instead: DBusMeta for the bus, DisplayMeta for the display", list, index, source, prefix)
-			return
+		if cleaned != prefix && !strings.HasPrefix(cleaned, prefix+"/") {
+			continue
 		}
+		add("%s[%d].HostMount %q: %s is host state Zinc brokers or grants by other means (the session bus and compositor sockets under /run/user, the devices behind DisplayMeta and AudioMeta, /proc and /sys); mounting it hands the app the capability directly while every Zinc report still says it has none. Ask for the capability instead: DBusMeta for the bus, DisplayMeta for the display and GPU, AudioMeta for sound devices", list, index, source, prefix)
+		return
 	}
 }
 
@@ -109,6 +122,13 @@ func checkKeys(keys []schema.Key, add addFunc) {
 			// Base("/..") is "/", so a trailing ".." collapses the destination onto the
 			// container home itself: "Path: /.." mounts the entire host filesystem over it.
 			add("Keys[%d].Path %q: must not contain '..' segments - the destination is derived from the path's last element, so '..' mounts the source over the container home instead of into it", index, keyEntry.Path)
+		default:
+			// A Key is a host bind mount like any other, so it gets the same host-path policy.
+			// Without this it was the way around that policy: "Path: /run/user/1000/bus" is
+			// absolute, has no '..' and no field-shifting character, and mounts the unfiltered
+			// session bus into the container home as a connectable socket, while DBusMeta stays
+			// empty and every Zinc report says the app has no bus.
+			checkHostSource("Keys", index, keyEntry.Path, add)
 		}
 	}
 }

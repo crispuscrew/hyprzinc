@@ -301,15 +301,22 @@ func netLabel(cfg schema.AppConfig) string {
 // is reading. Drop anything that can move the cursor, and bound the length.
 func oneLine(text string, limit int) string {
 	var bld strings.Builder
-	for _, char := range text {
+	kept := 0                   // RUNES, not bytes: fmt pads %-16s by runes, and counting bytes cut a Cyrillic
+	for _, char := range text { // or CJK name to roughly a third of the intended width
 		if char < 0x20 || char == 0x7f || (char >= 0x80 && char <= 0x9f) {
 			continue
 		}
-		if bld.Len() >= limit {
+		// Bidi overrides and line/paragraph separators reorder or break a row visually without
+		// being control characters, which is the same problem this function exists for.
+		if char == '\u202e' || char == '\u202d' || char == '\u2028' || char == '\u2029' {
+			continue
+		}
+		if kept >= limit {
 			bld.WriteString("...")
 			break
 		}
 		bld.WriteRune(char)
+		kept++
 	}
 	return bld.String()
 }

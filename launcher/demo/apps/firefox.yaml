@@ -1,4 +1,4 @@
-# Zinc demo app (schema v2). See launcher/demo/README.md. Try the picker with:
+# Zinc demo app (schema v3). See launcher/demo/README.md. Try the picker with:
 #   make -C launcher/gui demo      (GUI)   or   make -C launcher/tui demo   (TUI)
 SchemaVersion: 3
 Type: ZincContainer

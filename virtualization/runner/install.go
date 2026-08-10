@@ -69,8 +69,6 @@ func checkQemuPath(flagName, path string) error {
 		return fmt.Errorf("%s %q: must not contain ',' or ':' - qemu separates -drive properties with commas and resolves a duplicate key to the last one, so those characters append options to the drive rather than staying in the path", flagName, path)
 	case strings.ContainsAny(path, " \t\n\r"), strings.IndexFunc(path, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0:
 		return fmt.Errorf("%s %q: must be a single-line path with no whitespace or control characters", flagName, path)
-	case strings.Contains(path, ".."):
-		return fmt.Errorf("%s %q: must not contain a '..' segment - the path that gets opened should be the path that was typed", flagName, path)
 	}
 	return nil
 }

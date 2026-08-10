@@ -29,6 +29,23 @@ func checkAudio(cfg schema.AppConfig, add addFunc) {
 	}
 }
 
+// alsaDirection reports the direction an ALSA node name declares, if it declares one. A PCM
+// node is named pcmC<card>D<device><direction>, where the trailing letter is 'c' for capture
+// and 'p' for playback. A control node (controlC<card>) has no direction and is needed by both.
+func alsaDirection(device string) (capture bool, known bool) {
+	name := device[strings.LastIndex(device, "/")+1:]
+	if !strings.HasPrefix(name, "pcm") || len(name) == 0 {
+		return false, false // controlC0, hwC0D0, seq, timer: not direction-bearing
+	}
+	switch name[len(name)-1] {
+	case 'c':
+		return true, true
+	case 'p':
+		return false, true
+	}
+	return false, false
+}
+
 func checkAudioDevice(field string, dev schema.AudioDevice, add addFunc) {
 	if dev.Default && len(dev.Devices) > 0 {
 		// Unreachable through YAML, where the two forms are a scalar and a list, but a
@@ -47,6 +64,21 @@ func checkAudioDevice(field string, dev schema.AudioDevice, add addFunc) {
 				field, index, device, alsaRoot, alsaRoot, alsaRoot)
 		case hasDotDot(device):
 			add("AudioMeta.%s[%d] %q: must not contain a '..' segment - the node that gets passed should be the node that was reviewed", field, index, device)
+		default:
+			// The field an entry sits in has to mean something. Every named node is passed with
+			// --device, and the runner unions the two lists into one set, so without this a
+			// capture PCM listed under Playback grants a microphone to a config that reads
+			// "output only" - and says nothing, because nothing asked for `default`. The whole
+			// claim about the list form is that it is the enforced one; a label the kernel
+			// never sees is not enforcement.
+			if capture, known := alsaDirection(device); known {
+				switch {
+				case capture && field == "Playback":
+					add("AudioMeta.Playback[%d] %q: that is a CAPTURE device (the trailing 'c'), so listing it under Playback grants a microphone to an app whose config reads output-only; move it to Microphone", index, device)
+				case !capture && field == "Microphone":
+					add("AudioMeta.Microphone[%d] %q: that is a PLAYBACK device (the trailing 'p'), so it grants no capture; move it to Playback", index, device)
+				}
+			}
 		}
 	}
 }
@@ -77,7 +109,7 @@ func audioWarnings(cfg schema.AppConfig) []string {
 	var warns []string
 	if !cfg.AudioMeta.Microphone.Default {
 		warns = append(warns,
-			"AudioMeta: Playback: default mounts the session's PipeWire socket, which grants this app "+
+			"AudioMeta: asking for a session audio device (default) mounts the session's PipeWire socket, which grants this app "+
 				"microphone capture too. Microphone: none is not yet enforced for a container. Name exact "+
 				"/dev/snd nodes instead if the app must not be able to listen.")
 	}

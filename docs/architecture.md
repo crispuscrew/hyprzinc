@@ -68,7 +68,7 @@ There is no daemon, no host firewall change, and no persistent background servic
 
 ## 3. App Config (YAML)
 
-One YAML file per app: `~/.config/zinc/apps/<name>.yaml`. The format is **schema version 2**.
+One YAML file per app: `~/.config/zinc/apps/<name>.yaml`. The format is **schema version 3**.
 The same file is validated identically at author time (in `zc`, on save) and at launch time
 (in `zcr`, before anything runs), because the validation is pure and shared - so a manual
 edit or drift cannot slip an invalid config past launch.
@@ -1401,7 +1401,7 @@ zinc/
   tool.mk                binary targets (build/run/repro); each tool's Makefile includes it
   go.work                ties the modules together for local dev only (the build never uses it)
   common/                shared library - schema, validation, inheritance, wg config (pure)
-    domain/schema/                    schema.go (AppConfig, schema version 2)
+    domain/schema/                    schema.go (AppConfig, schema version 3)
     domain/schema/validate/           the hard rules + create-time warnings
     examples/apps/                    sample app YAMLs
   creator/               zc - the creator for BOTH app kinds (CLI + Bubbletea TUI)
@@ -1480,7 +1480,7 @@ the network lock-down applies rules with (6.4).
 | 2 | GPU passthrough weakens isolation, is granted unless a config opts out, and has no memory cap (see 5.4 on `dmem`) | `DisableGpuAccess: true` denies it; opt-out is deliberate, and it is the one grant not written into a config when it applies (5.4) |
 | 3 | Image tags can be poisoned upstream | third-party images must be digest-pinned; launch is `--pull never` (5.5) |
 | 4 | Derived images are per-machine, not digest-pinned | their guarantee is the pinned base plus the visible install lines (7) |
-| 5 | Some schema fields are validated but not yet enforced at runtime (config mounts). Resources and internal user are enforced; notifications are refused outright rather than ignored | called out explicitly in section 3; on the roadmap, fail-loud where relevant |
+| 5 | Some schema fields are validated but not yet enforced at runtime. Resources and internal user are enforced; notifications are refused outright rather than ignored | called out explicitly in section 3; on the roadmap, fail-loud where relevant |
 | 6 | Host-scoped egress, gateway/multi-homing, and mixing a sibling link with other networking are unsupported | fail-closed: rejected at launch, never mis-enforced (6.5) |
 | 7 | The netfilter helper runs with namespaced `CAP_NET_ADMIN` | namespaced to the pod's userns, harmless on the host; the image is local and `--pull never` (6.4) |
 | 8 | VM apps have no egress filtering, only explicit port forwards | the nftables model lives in a container netns and does not reach a guest; rejected rather than mis-enforced (10) |

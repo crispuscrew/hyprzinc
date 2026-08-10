@@ -3,6 +3,7 @@
 package validate
 
 import (
+	"fmt"
 	"net"
 	"regexp"
 	"strings"
@@ -20,7 +21,12 @@ var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 // anchor the reference only had to END in something digest-shaped, so
 // "-v/:/host@sha256:<64 hex>" passed as a pinned image and reached podman in the one argv
 // slot that is a bare positional, where pflag reads a leading '-' as a flag.
-var digestRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*@sha256:[0-9a-f]{64}$`)
+//
+// A registry port is part of an ordinary reference, so ":<digits>" is allowed after the host
+// and nowhere else: registry.example.com:5000/team/app@sha256:... has to keep working. A colon
+// there cannot reintroduce the flag problem, which the head anchor already settles.
+var digestRE = regexp.MustCompile(
+	`^[a-zA-Z0-9][a-zA-Z0-9._-]*(:[0-9]+)?(/[a-zA-Z0-9._-]+)*@sha256:[0-9a-f]{64}$`)
 
 // ifaceRE: interface charset; no comma/space that would splice pasta options.
 var ifaceRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -81,4 +87,19 @@ func validCIDR(cidr string, wantV6 bool) bool {
 // storage only, never a short name that could pull something remote.
 func LocalImage(image string) bool {
 	return strings.HasPrefix(image, "localhost/")
+}
+
+// AppName screens an app name on its own, without validating the rest of a config.
+//
+// It exists for the commands that act on an app that is ALREADY running - stop, restart,
+// logs, inspect, where, net. Those have to keep working for a config the current build would
+// reject, or an upgrade that tightens a rule (a schema bump included) leaves every running app
+// unstoppable except with raw podman. What they still cannot tolerate is an unchecked name:
+// this value becomes a container name, a pod name and a path segment inside an `rm -rf`, so
+// "--all" or "../.." here is the difference between removing one app and removing all of them.
+func AppName(name string) error {
+	if !nameRE.MatchString(name) {
+		return fmt.Errorf("AppNameID %q: must be lowercase [a-z0-9._-] starting with a letter or digit", name)
+	}
+	return nil
 }
