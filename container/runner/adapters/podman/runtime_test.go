@@ -686,3 +686,42 @@ func TestAppRunArgs_ConfigWithoutABundleRootIsRefused(t *testing.T) {
 		t.Fatal("a Config with no resolvable bundle directory should refuse, not mount nothing")
 	}
 }
+
+// The app's environment is emitted in sorted order, because a Go map has none and this argv
+// is what --dry-run prints and what the reproducible-build check compares.
+func TestAppRunArgs_EnvIsSortedAndPrecedesTheRunnersOwn(t *testing.T) {
+	cfg := validCfg()
+	cfg.Env = map[string]string{"ZED": "3", "ALPHA": "1", "MID": "2"}
+	args, err := Runtime{}.AppRunArgs(cfg, options.HostOptions{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for index, arg := range args {
+		if arg == "-e" && index+1 < len(args) {
+			got = append(got, args[index+1])
+		}
+	}
+	want := []string{"ALPHA=1", "MID=2", "ZED=3"}
+	if len(got) < len(want) {
+		t.Fatalf("env flags = %v, want at least %v", got, want)
+	}
+	if !slices.Equal(got[:len(want)], want) {
+		t.Errorf("env flags = %v, want %v first and in sorted order", got, want)
+	}
+}
+
+func TestAppRunArgs_ReadOnlyRootfs(t *testing.T) {
+	cfg := validCfg()
+	if args, _ := (Runtime{}).AppRunArgs(cfg, options.HostOptions{}, nil); slices.Contains(args, "--read-only") {
+		t.Fatal("--read-only appeared without the config asking")
+	}
+	cfg.ReadOnlyRootfs = true
+	args, err := Runtime{}.AppRunArgs(cfg, options.HostOptions{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(args, "--read-only") {
+		t.Errorf("ReadOnlyRootfs did not reach the argv: %v", args)
+	}
+}

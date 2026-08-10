@@ -11,6 +11,7 @@ package podman
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -253,6 +254,24 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 	// Theme bundle - one curated read-only directory (section 5.6).
 	if cfg.HostTheme && opt.ThemeBundleDir != "" {
 		args = append(args, "-v", opt.ThemeBundleDir+":"+ctrThemeDir+":ro")
+	}
+
+	// The app's own environment, before anything the runner exports. Zinc's variables
+	// describe what it actually constructed, so they must win; the validator already refuses
+	// those names here, and emitting the config's first means a future export cannot be
+	// shadowed by one either.
+	//
+	// Sorted, because a Go map has no order and this argv is what --dry-run prints, what the
+	// reproducible-build check compares, and what a reviewer reads.
+	for _, name := range slices.Sorted(maps.Keys(cfg.Env)) {
+		args = append(args, "-e", name+"="+cfg.Env[name])
+	}
+
+	// A read-only root filesystem. Podman keeps a writable tmpfs on /dev, /dev/shm, /run,
+	// /tmp and /var/tmp (--read-only-tmpfs defaults true), so an app that only needs scratch
+	// space still runs; what stops is writing into the image itself.
+	if cfg.ReadOnlyRootfs {
+		args = append(args, "--read-only")
 	}
 
 	// Audio (section 3 AudioMeta). The config states a direction and a strength; this picks

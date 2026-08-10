@@ -137,6 +137,10 @@ NotificationMeta:                # NOT implemented - a non-default value is refu
   AllowedProlonged: false
   AllowedLinks: false
 
+Env:                             # the app's environment; Zinc's own variables are refused
+  LANG: en_US.UTF-8
+ReadOnlyRootfs: false            # true = --read-only (podman keeps /tmp, /run, /dev writable)
+
 Configs:                         # files the app ships with, from apps/<app>/configs/
   - BundlePath: settings.json    # relative to the bundle; absolute is a Volume, not this
     InnerMount: /etc/app/settings.json

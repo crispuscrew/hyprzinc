@@ -56,7 +56,7 @@ type formField struct {
 // formModel is the create/edit form. draft holds the bool values directly; the text
 // fields live in their own inputs and are folded into draft on save. The v2 schema's
 // list-valued fields (ImageMeta.Install is line-oriented here; Capabilities,
-// NetworkMeta.NetworkLists, Volumes, Configs, Keys) are edited via the advanced $EDITOR
+// NetworkMeta.NetworkLists, Volumes, Configs, Keys, Env) are edited via the advanced $EDITOR
 // action, summarized on the "advanced" row.
 type formModel struct {
 	creating bool
@@ -211,6 +211,9 @@ func (frm *formModel) buildFields() {
 		boolean("audio.monitor",
 			func() bool { return !frm.draft.AudioMeta.Monitor.IsZero() },
 			func(val bool) { setAudio(&frm.draft.AudioMeta.Monitor, val) }),
+		boolean("read_only_rootfs",
+			func() bool { return frm.draft.ReadOnlyRootfs },
+			func(val bool) { frm.draft.ReadOnlyRootfs = val }),
 		boolean("host_theme",
 			func() bool { return frm.draft.HostTheme },
 			func(val bool) { frm.draft.HostTheme = val }),

@@ -56,6 +56,19 @@ type AppConfig struct {
 	// field can never look configured while doing nothing.
 	VirtualizationMeta VirtualizationMeta `yaml:"VirtualizationMeta"`
 
+	// Env is the app's environment, as it is written rather than as a list of KEY=VALUE
+	// strings, so a duplicate key is impossible and a reviewer reads a mapping. Zinc's own
+	// wiring (the runtime dir, the display, the bus address) is refused here: those describe
+	// what the runner constructed, and a config overriding one would be describing something
+	// that is not true.
+	Env map[string]string `yaml:"Env"`
+
+	// ReadOnlyRootfs makes the container's root filesystem read-only. Podman still mounts a
+	// writable tmpfs on /dev, /dev/shm, /run, /tmp and /var/tmp, so most apps keep working;
+	// what stops is an app writing into its own image at runtime, which is both a persistence
+	// surprise and the first step of a good many exploits.
+	ReadOnlyRootfs bool `yaml:"ReadOnlyRootfs"`
+
 	Configs      []ConfigFile `yaml:"Configs"` // files the app ships with, from its own bundle
 	Volumes      []Volume     `yaml:"Volumes"` // extra host bind mounts can also be added for one run via `zcr run -v` (not persisted here)
 	Keys         []Key        `yaml:"Keys"`

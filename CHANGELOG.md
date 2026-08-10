@@ -272,6 +272,16 @@ covers the bytes of a file, and a file can point somewhere else.
 
 ### Still open
 
+- A VM app has no egress control. `-netdev user,id=net0` is built unconditionally, and
+  `ForwardPorts` only adds inbound `hostfwd` entries, so every guest gets unrestricted outbound
+  plus the host's loopback through slirp's gateway. That inverts the advice in the known-issues
+  table, which points at a VM as the stronger boundary for untrusted GUI apps: on the network
+  axis a container gets a fail-closed nftables ruleset and a guest gets nothing. This belongs to
+  `zvr` rather than to the schema. qemu's `restrict=on` is a blunt all-or-nothing answer; the
+  shape worth aiming at is the one the container side already uses, since pasta is a dependency
+  already and can back a qemu netdev, which would give both runtimes one network model instead
+  of two.
+
 - No VRAM limit exists, and one is deliberately not being added yet. An app granted `/dev/dri`
   can allocate GPU memory until the device is exhausted, which is a denial of service against
   the desktop rather than against itself, and `ResourcesMeta` cannot bound it. The mechanism
