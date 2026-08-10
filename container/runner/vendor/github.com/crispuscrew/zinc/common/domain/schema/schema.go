@@ -285,6 +285,18 @@ type CloudInit struct {
 
 type DisplayMeta struct {
 	DisableSecurityContext bool `yaml:"DisableSecurityContext"` // security-context | passthrough
+	// RequireSecurityContext refuses the launch on a compositor that does not implement
+	// wp_security_context_v1, instead of handing the app the compositor socket directly.
+	//
+	// The fallback exists because most compositors still lack the protocol and a desktop that
+	// refused to start anything would be useless. But the fallback is a real downgrade: the
+	// app becomes a client the compositor cannot tell apart from an unsandboxed one, and the
+	// container is labelled `zinc.wayland=passthrough` to say so. Until now nothing could ask
+	// for the strict answer, so an app whose whole reason for being sandboxed is that it is
+	// untrusted had no way to say "not like this".
+	//
+	// Contradicts DisableSecurityContext, and setting both is refused rather than resolved.
+	RequireSecurityContext bool `yaml:"RequireSecurityContext"`
 	DisableGpuAccess       bool `yaml:"DisableGpuAccess"`
 }
 

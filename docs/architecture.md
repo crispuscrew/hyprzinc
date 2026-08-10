@@ -117,7 +117,8 @@ ImageMeta:
 
 DisplayMeta:
   DisableSecurityContext: false  # false = the app gets its own wp_security_context_v1 socket (5.2)
-  DisableGpuAccess: true         # true = no /dev/dri (default off; GPU weakens isolation, 5.4)
+  RequireSecurityContext: false  # true = refuse to launch rather than fall back to the raw socket
+  DisableGpuAccess: true         # true = no /dev/dri (GPU is granted unless this is set, 5.4)
 
 NetworkMeta:
   DNSServers: []                 # resolvers the app may use, and the only ones it may reach
@@ -370,6 +371,15 @@ protocols it is denied is unaffected by any of it. **The real isolation boundary
 container is still the container itself** (5.1); for genuinely untrusted GUI apps the stronger
 answer is a VM (section 10).
 
+**Requiring it.** The fallback above is a real downgrade: the app becomes a client the
+compositor cannot tell apart from an unsandboxed one, and the container is labelled
+`zinc.wayland=passthrough` to record that. `DisplayMeta.RequireSecurityContext: true` refuses
+the launch instead, naming the compositor as the reason. It exists for the app whose whole
+reason for being sandboxed is that it is untrusted, where running it unlabelled is worse than
+not running it. The default stays permissive because most compositors still lack the protocol
+and a desktop that refused to start anything would not be one anyone runs. Setting it together
+with `DisableSecurityContext` is refused rather than resolved: they are opposites.
+
 ### 5.3 Network isolation (per-app netns, fail-closed)
 
 **Strong, and the crown jewel of the security model.** An app's `NetworkMeta.NetworkLists`
@@ -448,6 +458,31 @@ what it was granted will not find this one written down anywhere.
 
 Rule: set `DisableGpuAccess: true` for anything that does not render, and never leave it on
 for untrusted code.
+
+**There is no VRAM limit, and this is why.** GPU memory is the one resource `ResourcesMeta`
+cannot bound: an app granted `/dev/dri` can allocate until the device is exhausted, which is a
+denial of service against the whole desktop rather than against itself. The mechanism that
+would fix this is the kernel's `dmem` cgroup controller (Linux 6.14+), which accounts device
+memory per cgroup and is exactly the right granularity. It is not usable yet:
+
+- The controller has to be present AND the DRM driver has to register regions for it. On the
+  development box here `dmem` appears in `cgroup.controllers`, and `dmem.capacity` is empty
+  with no `dmem.max`, because the driver registers nothing. Most drivers still do not.
+- Podman can set unified cgroup values with `--cgroup-conf`, so the plumbing on Zinc's side is
+  small once regions exist.
+
+So a `VramLimitMiB` field would read as a cap and do nothing on nearly every machine, which is
+the failure this project refuses elsewhere. Deferred deliberately, to be added when the
+controller is usable: it would be additive, with no schema bump, since absent means unlimited.
+
+The VM side has two numbers that look like VRAM and are not. `hostmem` on `virtio-gpu-gl-pci`
+is the address-space window venus shares blob resources through, and reserves address space
+rather than committing memory; `vgamem` on `bochs-display` is emulated VGA memory sized from
+the requested resolution, so exposing it would mainly let a config contradict its own
+`DisplayWidth`/`DisplayHeight`. Neither is a memory cap, and neither is worth a field.
+
+Until then the containment answer is the blunt one: deny the GPU to anything that does not
+need it.
 
 ### 5.5 Image trust (digest pinning + derived images)
 
@@ -1438,7 +1473,7 @@ the network lock-down applies rules with (6.4).
 | # | Issue | Mitigation |
 |---|-------|------------|
 | 1 | Zinc supplies the security-context identity; what a tagged client is allowed to do is the compositor's policy, and a compositor without the protocol gets the raw socket and a warning | the container boundary is the real wall (5.1); a VM (section 10) is the stronger boundary for untrusted GUI apps |
-| 2 | GPU passthrough weakens isolation, and is granted unless a config opts out | `DisableGpuAccess: true` denies it; opt-out is deliberate, and it is the one grant not written into a config when it applies (5.4) |
+| 2 | GPU passthrough weakens isolation, is granted unless a config opts out, and has no memory cap (see 5.4 on `dmem`) | `DisableGpuAccess: true` denies it; opt-out is deliberate, and it is the one grant not written into a config when it applies (5.4) |
 | 3 | Image tags can be poisoned upstream | third-party images must be digest-pinned; launch is `--pull never` (5.5) |
 | 4 | Derived images are per-machine, not digest-pinned | their guarantee is the pinned base plus the visible install lines (7) |
 | 5 | Some schema fields are validated but not yet enforced at runtime (config mounts). Resources and internal user are enforced; notifications are refused outright rather than ignored | called out explicitly in section 3; on the roadmap, fail-loud where relevant |

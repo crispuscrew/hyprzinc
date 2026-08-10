@@ -164,6 +164,12 @@ func (Broker) Establish(addr paths.Address, cfg schema.AppConfig, opt options.Ho
 		return "", fmt.Errorf("%s: %w", addr, err)
 	}
 	if !supported {
+		// The strict answer is decided here rather than in the holder: the holder knows the
+		// compositor and this side knows the config, and the status line already carries the
+		// one fact that has to cross between them.
+		if cfg.DisplayMeta.RequireSecurityContext {
+			return "", fmt.Errorf("%s: RequireSecurityContext is set and this compositor does not implement wp_security_context_v1, so the only way to start this app would be to hand it the compositor socket directly, which is what that setting refuses; clear it to accept the passthrough, or run the app under a compositor that implements the protocol", addr)
+		}
 		fmt.Fprintf(os.Stderr, "zcr: %s: this compositor does not implement wp_security_context_v1, so the app is given the compositor socket directly and the compositor cannot tell it apart from an unsandboxed client\n", addr)
 		return "", nil
 	}

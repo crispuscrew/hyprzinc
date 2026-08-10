@@ -36,6 +36,20 @@ tracked in [RELEASES.md](RELEASES.md).
   being absolute, meaning a placeholder in a `Config` could never have worked.
 
 
+- **Schema v3: `DisplayMeta.RequireSecurityContext`.** A compositor without
+  `wp_security_context_v1` gets handed the raw socket, and the container is labelled
+  `zinc.wayland=passthrough` to record that the app is a client the compositor cannot tell
+  apart from an unsandboxed one. That fallback is deliberate, since most compositors still
+  lack the protocol, but nothing could ask for the strict answer. Now a config can: the launch
+  is refused instead, naming the compositor as the reason. For an app that is sandboxed
+  precisely because it is untrusted, running it unlabelled is worse than not running it.
+
+  The decision is made where the config is known rather than in the detached holder process,
+  so nothing about the holder's status protocol changed. Setting it together with
+  `DisableSecurityContext` is refused rather than resolved, since they are opposites, and it is
+  refused for a VM app, whose guest draws into a qemu window and never speaks the host's
+  compositor protocol.
+
 - **Schema v3: `AudioMeta.Monitor`, the third audio capability.** A PipeWire sink carries a
   `.monitor` source, a readable tap on everything mixed into it, so a client on the session
   socket can record what OTHER apps are playing. That is a distinct capability from a
@@ -257,6 +271,15 @@ covers the bytes of a file, and a file can point somewhere else.
   add to pin it.
 
 ### Still open
+
+- No VRAM limit exists, and one is deliberately not being added yet. An app granted `/dev/dri`
+  can allocate GPU memory until the device is exhausted, which is a denial of service against
+  the desktop rather than against itself, and `ResourcesMeta` cannot bound it. The mechanism
+  that would fix it is the kernel's `dmem` cgroup controller (Linux 6.14+), which needs the
+  DRM driver to register regions: on the development box the controller is present while
+  `dmem.capacity` is empty, so there is nothing to limit. A field now would read as a cap and
+  do nothing on nearly every machine. When regions exist it is additive, with no schema bump.
+  The VM's `hostmem` and `vgamem` are not caps and are not a substitute (architecture doc, 5.4).
 
 - The D-Bus proxy, the pod, its netns, the egress bridge and any published host port are not
   torn down when an app exits on its own. The reaping goroutine that was meant to cover this
