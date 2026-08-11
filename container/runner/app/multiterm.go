@@ -110,7 +110,11 @@ func (svc Service) Term(cfg schema.AppConfig, opt options.HostOptions, shell boo
 // app this runs the enforcer's pre-steps (pod create → nft) so there is no
 // unfiltered-egress window; the holder's `podman run -d` returns at once.
 func (svc Service) ensureHolder(cfg schema.AppConfig, opt options.HostOptions) error {
-	if svc.runtime.Exists(cfg.AppNameID) {
+	// Running, not merely present. A holder runs without --rm whenever the app also sets
+	// KeepAlive or Autorestart, so one that died outside the last-one-out path leaves an Exited
+	// container behind: Exists stays true, this returns as though the holder were up, and the
+	// terminal execs into a corpse. The app is then wedged until someone runs podman by hand.
+	if svc.runtime.IsRunning(cfg.AppNameID) {
 		return nil
 	}
 	steps, err := svc.prepareSteps(cfg, opt)

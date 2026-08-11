@@ -72,7 +72,12 @@ type Runtime interface {
 	// can actually serve it (StartConditions.ReadyCheck); how the answer is obtained is
 	// the adapter's business.
 	HealthProbe(name string) error
-	Exists(name string) bool           // does a container with this name exist (running or not)?
+	Exists(name string) bool // does a container with this name exist (running or not)?
+	// IsRunning is Exists narrowed to "and is it actually running". A container that runs
+	// without --rm (KeepAlive, Autorestart) survives its own exit, so Exists cannot tell an
+	// alive holder from a dead one. A query failure answers false, which for the callers here
+	// means "start one" rather than "attach to it", and is the safe direction.
+	IsRunning(name string) bool
 	Do(args []string) error            // user-facing passthrough (stop/restart/inspect/logs) with host stdio
 	Running() (map[string]bool, error) // names the runtime reports as running (list view)
 	// PIDs is the host PID of each running container's main process, by container name.

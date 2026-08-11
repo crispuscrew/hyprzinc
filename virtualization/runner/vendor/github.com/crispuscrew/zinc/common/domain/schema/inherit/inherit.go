@@ -169,6 +169,21 @@ func documentRoot(data []byte) (*yaml.Node, error) {
 // mergeNode returns base overlaid with child. Two mappings merge key by key and recurse;
 // anything else means the child simply wins, which is what makes a stated list replace an
 // inherited one and a stated scalar - false included - override.
+// replaceWhole names the mappings whose KEYS are the author's rather than the schema's.
+//
+// The rule for a nested block is that it merges field by field, and that is right: those keys
+// are a fixed set the schema defines, so a child restating one field should not silently drop
+// the base's others. Env is not that. Its keys are chosen by whoever wrote the config, so
+// merging makes it the one field a child cannot narrow: `Env: {}` left every inherited
+// variable in place, and a base setting LD_PRELOAD or SSL_CERT_FILE could not be disowned by
+// any child, while the child's own file read as though it had none. That is the loosening a
+// base cannot be walked back from, which the package comment gives as the reason for merging
+// nodes rather than structs in the first place.
+//
+// So a stated Env replaces, which is also what the documented rule already says about a
+// stated list.
+var replaceWhole = map[string]bool{"Env": true}
+
 func mergeNode(base, child *yaml.Node) (*yaml.Node, error) {
 	if base.Kind != yaml.MappingNode || child.Kind != yaml.MappingNode {
 		return child, nil
@@ -185,6 +200,11 @@ func mergeNode(base, child *yaml.Node) (*yaml.Node, error) {
 		position := findKey(out, key.Value)
 		if position < 0 {
 			out.Content = append(out.Content, key, value)
+			continue
+		}
+		if replaceWhole[key.Value] {
+			// A child that states this key replaces it outright rather than merging into it.
+			out.Content[position+1] = value
 			continue
 		}
 		merged, err := mergeNode(out.Content[position+1], value)

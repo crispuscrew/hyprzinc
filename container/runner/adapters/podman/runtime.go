@@ -290,8 +290,17 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		args = append(args, "-v", pipewireSock+":"+filepath.Join(ctrXDGRuntime, "pipewire-0")+":ro")
 		exportRuntimeDir()
 	}
-	for _, device := range audioDevices(cfg.AudioMeta) {
-		args = append(args, "--device", device)
+	if devices := audioDevices(cfg.AudioMeta); len(devices) > 0 {
+		for _, device := range devices {
+			args = append(args, "--device", device)
+		}
+		// Access to /dev/snd is granted to the human, either by a logind ACL on the seat or by
+		// membership of the `audio` group. --device passes the node through; it does not carry
+		// the group that makes it openable. Without this, the strong audio form works on an ACL
+		// host and silently does not on a group host, and it never works together with
+		// InternalUserMeta.UseNonRootUser, whose mapped subuid is in neither. keep-groups asks
+		// the runtime to retain the invoking user's supplementary groups.
+		args = append(args, "--group-add", "keep-groups")
 	}
 
 	// Config files (section 3 Configs): the files the app was authored with, from its own
@@ -587,6 +596,14 @@ func (Runtime) Exists(name string) bool {
 	return exec.Command("podman", "container", "exists", name).Run() == nil
 }
 
+// IsRunning reports whether the named container is running now. A failed query answers false:
+// the callers use it to decide whether to start something, and starting a second holder that
+// then collides by name fails loudly, while attaching to a container that is not there does not.
+func (Runtime) IsRunning(name string) bool {
+	running, err := isRunning(name)
+	return err == nil && running
+}
+
 // appearWindow and appearPoll bound the wait for a container that does not exist yet. The
 // launch creates it moments after WaitGone is called, but "moments" covers a pod create, an
 // nft load and a D-Bus proxy readiness probe, so the window is generous. It is a window at
@@ -659,14 +676,40 @@ func (rt Runtime) restartsWithin(name string, window time.Duration) bool {
 	deadline := time.Now().Add(window)
 	for time.Now().Before(deadline) {
 		time.Sleep(appearPoll)
-		if !rt.Exists(name) {
-			return false
-		}
-		if running, _ := rt.Running(); running[name] {
+		switch state, err := isRunning(name); {
+		case err != nil:
+			// Unknown, not dead. Running() answers an empty map with a nil error when podman
+			// fails, and Exists reads any failure as "no such container", so a busy image
+			// store or a held storage lock used to be indistinguishable from "the app exited".
+			// Acting on that revokes the Wayland security context of an app that is still
+			// running, and the app loses its display for good. Keep polling instead: the
+			// window closes on its own, and the worst case is holding a little too long.
+			continue
+		case state:
 			return true
+		}
+		if !rt.Exists(name) {
+			return false // genuinely gone, not merely unanswerable
 		}
 	}
 	return false
+}
+
+// isRunning asks podman about ONE container and distinguishes the three answers that matter:
+// running, not running, and could not tell. `podman ps` filtered by name is used rather than
+// `inspect` because a missing container is an empty result rather than an error, so the three
+// cases stay apart.
+func isRunning(name string) (bool, error) {
+	out, err := exec.Command("podman", "ps", "--filter", "name=^"+name+"$", "--format", "{{.Names}}").Output()
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == name {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Do runs a user-facing podman command (stop/restart/inspect/logs) with the host's

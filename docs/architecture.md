@@ -451,7 +451,7 @@ broadly than process boundaries suggest, and Linux GPU sandboxing is immature.
 
 **GPU access is ON unless a config opts out** with `DisplayMeta.DisableGpuAccess: true`. An
 app that says nothing about the display receives `/dev/dri`. This section claimed the
-opposite until 0.9.2; the code was always the authority and the text was wrong.
+opposite until the schema v3 release; the code was always the authority and the text was wrong.
 
 This is a deliberate exception, and the only grant in the schema whose zero value is the
 permissive one. Every other grant defaults closed: no `NetworkLists` means `--network none`,

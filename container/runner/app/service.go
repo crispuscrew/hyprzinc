@@ -12,6 +12,8 @@ package app
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/crispuscrew/zinc/common/domain/schema"
@@ -172,6 +174,9 @@ func (svc Service) launch(cfg schema.AppConfig, opt options.HostOptions, chain [
 		return fmt.Errorf("%s: %w", cfg.AppNameID, err)
 	}
 	opt = svc.withBundle(cfg, opt)
+	if err := checkLaunchSources(cfg, opt); err != nil {
+		return err
+	}
 	if err := checkNetwork(cfg); err != nil { // fail closed on not-yet-supported network shapes
 		return err
 	}
@@ -360,3 +365,48 @@ func (svc Service) Logs(name string, tail int) (string, error) { return svc.runt
 // Do runs a user-facing runtime command (restart/inspect/logs passthrough) with the
 // host's stdio - for the CLI, where streaming output is wanted.
 func (svc Service) Do(args []string) error { return svc.runtime.Do(args) }
+
+// checkLaunchSources confirms the host things a launch mounts or passes through actually
+// exist, before anything is created.
+//
+// It has to happen here rather than in validation, which deliberately does not read the files
+// a config names, and it cannot be left to podman. StartApp is detached with nil stdio, so a
+// `podman run` that dies on a missing -v source or a missing --device node writes its error to
+// /dev/null: zcr exits 0, the teardown runs, and the user is told nothing at all. A config file
+// that is not where the app says it is has to be an error someone can read.
+func checkLaunchSources(cfg schema.AppConfig, opt options.HostOptions) error {
+	for _, configFile := range cfg.Configs {
+		source := filepath.Join(opt.BundleDir, configFile.BundlePath)
+		info, err := os.Stat(source)
+		if err != nil {
+			return fmt.Errorf("%s: Configs %q: %w\nthe app's bundle is %s; put the file there, or correct BundlePath",
+				cfg.AppNameID, configFile.BundlePath, err, opt.BundleDir)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("%s: Configs %q resolves to a directory (%s); name the file itself",
+				cfg.AppNameID, configFile.BundlePath, source)
+		}
+		// Resolve symlinks and require the result to stay inside the bundle. Validation forbids
+		// ".." in the path, but podman follows a symlink IN the bundle to wherever it points,
+		// and the YAML is the review surface while the symlink is not.
+		real, err := filepath.EvalSymlinks(source)
+		if err != nil {
+			return fmt.Errorf("%s: Configs %q: %w", cfg.AppNameID, configFile.BundlePath, err)
+		}
+		bundle, err := filepath.EvalSymlinks(opt.BundleDir)
+		if err != nil {
+			return fmt.Errorf("%s: the app's bundle %s: %w", cfg.AppNameID, opt.BundleDir, err)
+		}
+		if !strings.HasPrefix(real, bundle+string(filepath.Separator)) {
+			return fmt.Errorf("%s: Configs %q leads outside the app's bundle (to %s); a config file has to live in the bundle it is read from, so what a reviewer reads is what gets mounted",
+				cfg.AppNameID, configFile.BundlePath, real)
+		}
+	}
+	for _, device := range append(append([]string{}, cfg.AudioMeta.Playback.Devices...), cfg.AudioMeta.Microphone.Devices...) {
+		if _, err := os.Stat(device); err != nil {
+			return fmt.Errorf("%s: AudioMeta names %s, which is not on this host: %w\nthe card numbering moves between boots; check `ls /dev/snd`",
+				cfg.AppNameID, device, err)
+		}
+	}
+	return nil
+}

@@ -65,6 +65,7 @@ func (engine *fakeRuntime) HealthProbe(name string) error {
 	return nil
 }
 func (engine *fakeRuntime) Exists(name string) bool           { return engine.running[name] }
+func (engine *fakeRuntime) IsRunning(name string) bool        { return engine.running[name] }
 func (engine *fakeRuntime) Do([]string) error                 { return nil }
 func (engine *fakeRuntime) Running() (map[string]bool, error) { return engine.running, nil }
 func (engine *fakeRuntime) Logs(string, int) (string, error)  { return "", nil }
