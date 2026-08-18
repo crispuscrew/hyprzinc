@@ -247,19 +247,14 @@ a pin covers the bytes of a file, and a file can point somewhere else.
   (6.14+), which needs the DRM driver to register regions; on the development box the controller
   is present while `dmem.capacity` is empty. A field now would read as a cap and do nothing.
   Additive when regions exist, with no schema bump.
-- The proxy, pod, netns, bridge and published ports are not torn down when an app exits on its
-  own: the reaping goroutine cannot run, since every front-end launches through a short-lived
-  `zcr`. The leaked pod also makes the next filtered launch fail, `pod create` having no
-  `--replace`. The fix is a supervisor that outlives the app, which the Wayland holder already is.
-- The already-running refusal reads `podman ps` at the top of the launch, but the container does
-  not appear there until the end, so a second launch a second later still passes and its
-  fail-closed teardown removes the first one's pod and proxy. There is no lock in the launch path.
-- `zcr net` reports posture from the config file at report time without probing the running
-  system, so editing a YAML changes what the attestation surface says about a running app.
-- A config run from a file path can claim an `AppNameID` that resolves to another app's address,
-  forging that app's Wayland `app_id`, container name, bus row and `zcr net` posture.
-- The multiterminal launch enforces in a detached process with stdio discarded, so a failed
-  ruleset load or a rejected security context is reported as a successful launch.
+- `AudioMeta.Monitor: none` cannot be enforced alongside `Playback: default`, and the reason is
+  structural rather than unfinished work: a sink's `.monitor` is a set of ports on the sink an
+  app plays to, not an object of its own, so denying it would deny playback. Closing it needs a
+  virtual sink per app. Validation says exactly this rather than warning about audio generally.
+- A guest's egress covers self-scoped lists only. Sibling links, routing through a gateway and
+  by-name allowances are refused for a VM app rather than half-applied; the container renderer
+  still holds that vocabulary, and `common/domain/nftrules` is the shape it can collapse into
+  when it reaches guests too.
 
 ## [0.9.1] - 2026-07-31
 
