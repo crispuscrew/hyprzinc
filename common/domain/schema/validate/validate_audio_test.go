@@ -57,18 +57,21 @@ func TestAudio_DeviceListRefusedOnAVMApp(t *testing.T) {
 // The container runtime cannot yet keep "output only": mounting the PipeWire socket grants
 // capture whatever the config says. The warning is the whole reason the two directions are
 // separate fields, so it is worth pinning.
-func TestAudio_ContainerPlaybackOnlyWarnsThatCaptureIsNotDenied(t *testing.T) {
+func TestAudio_PlaybackOnlyNoLongerWarnsAboutCapture(t *testing.T) {
 	cfg := baseCfg()
 	cfg.AudioMeta.Playback = schema.AudioDevice{Default: true}
+	// Microphone: none is enforced now: the runner hands the app a socket of its own under a
+	// PipeWire security context and then removes its permission on every capture node. Warning
+	// that it is not enforced would send an author to a device list they do not need.
 	joined := strings.Join(Warnings(cfg), "\n")
-	if !strings.Contains(joined, "microphone capture") {
-		t.Errorf("playback-only should warn that capture is not denied, got: %v", Warnings(cfg))
+	if strings.Contains(joined, "Microphone: none is not yet enforced") {
+		t.Errorf("capture denial is enforced now, so it must not be warned about: %v", Warnings(cfg))
 	}
 
-	// Naming exact nodes has no such gap: the kernel enforces it.
+	// Naming exact nodes carries no caveat at all: the kernel enforces it.
 	cfg.AudioMeta.Playback = schema.AudioDevice{Devices: []string{"/dev/snd/controlC1", "/dev/snd/pcmC1D3p"}}
-	if joined := strings.Join(Warnings(cfg), "\n"); strings.Contains(joined, "microphone capture") {
-		t.Errorf("a device list should not carry the socket caveat, got: %v", Warnings(cfg))
+	if warns := Warnings(cfg); len(warns) != 0 {
+		t.Errorf("a device list should carry no audio caveat, got: %v", warns)
 	}
 
 	// Asking for both is not a broken promise, so it is not warned about.
@@ -141,9 +144,26 @@ func TestAudio_MonitorAloneIsASessionGrant(t *testing.T) {
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("Monitor on its own should validate: %v", err)
 	}
+	// Monitor on its own reaches the graph, but with no Playback grant there is no sink this
+	// app plays to and therefore no monitor caveat to state.
+	if warns := Warnings(cfg); len(warns) != 0 {
+		t.Errorf("Monitor alone should carry no caveat, got: %v", warns)
+	}
+}
+
+// The one caveat that survives: a sink's .monitor is a set of ports on the sink an app plays
+// to, so denying it would mean denying playback. That is structural, not unfinished.
+func TestAudio_MonitorNoneWithPlaybackIsWarned(t *testing.T) {
+	cfg := baseCfg()
+	cfg.AudioMeta.Playback = schema.AudioDevice{Default: true}
 	joined := strings.Join(Warnings(cfg), "\n")
-	if !strings.Contains(joined, "Microphone: none is not yet enforced") {
-		t.Errorf("the socket is mounted for Monitor too, so the capture caveat applies: %v", Warnings(cfg))
+	if !strings.Contains(joined, "Monitor: none cannot be enforced") {
+		t.Errorf("playback with no monitor grant should state the monitor caveat, got: %v", Warnings(cfg))
+	}
+	// Granting it is not a broken promise, so it is not warned about.
+	cfg.AudioMeta.Monitor = schema.AudioDevice{Default: true}
+	if warns := Warnings(cfg); len(warns) != 0 {
+		t.Errorf("an app that declares Monitor: default should not be warned: %v", warns)
 	}
 }
 

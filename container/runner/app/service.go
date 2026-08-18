@@ -27,11 +27,12 @@ type Service struct {
 	net      ports.NetEnforcer
 	bus      ports.DBusBroker
 	display  ports.DisplayBroker
+	audio    ports.AudioBroker
 }
 
 // New wires the ports into a Service.
-func New(store ports.Store, runtime ports.Runtime, builder ports.ImageBuilder, resolver ports.ImageResolver, net ports.NetEnforcer, bus ports.DBusBroker, display ports.DisplayBroker) Service {
-	return Service{store: store, runtime: runtime, builder: builder, resolver: resolver, net: net, bus: bus, display: display}
+func New(store ports.Store, runtime ports.Runtime, builder ports.ImageBuilder, resolver ports.ImageResolver, net ports.NetEnforcer, bus ports.DBusBroker, display ports.DisplayBroker, audio ports.AudioBroker) Service {
+	return Service{store: store, runtime: runtime, builder: builder, resolver: resolver, net: net, bus: bus, display: display, audio: audio}
 }
 
 // address recovers the app and instance halves of a runtime name. The Wayland security context is
@@ -66,6 +67,22 @@ func (svc Service) withDisplay(cfg schema.AppConfig, opt options.HostOptions) (o
 		return opt, err
 	}
 	opt.WaylandSocket = socket
+	return opt, nil
+}
+
+// withAudio establishes the app's PipeWire security context and returns the options its
+// container should be built from. Like withDisplay it runs immediately before the container,
+// whose bind mount needs the socket to exist, and takes opt by value so a dependency never
+// inherits its dependent's socket.
+func (svc Service) withAudio(cfg schema.AppConfig, opt options.HostOptions) (options.HostOptions, error) {
+	if svc.audio == nil {
+		return opt, nil
+	}
+	socket, err := svc.audio.Establish(svc.address(cfg.AppNameID), cfg, opt)
+	if err != nil {
+		return opt, err
+	}
+	opt.PipeWireSocket = socket
 	return opt, nil
 }
 
@@ -176,6 +193,10 @@ func (svc Service) launch(cfg schema.AppConfig, opt options.HostOptions, chain [
 		}
 	}
 	opt, err = svc.withDisplay(cfg, opt)
+	if err != nil {
+		return errors.Join(fmt.Errorf("launch %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
+	}
+	opt, err = svc.withAudio(cfg, opt)
 	if err != nil {
 		return errors.Join(fmt.Errorf("launch %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
 	}

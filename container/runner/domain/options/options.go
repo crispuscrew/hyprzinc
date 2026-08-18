@@ -26,4 +26,8 @@ type HostOptions struct {
 	// one field here that is a RESULT rather than a host fact - filled in after the context exists, so an
 	// argv can never claim a socket that was never made.
 	WaylandSocket string
+	// PipeWireSocket is the host path of the audio socket to bind-mount in: the per-instance one
+	// created under a PipeWire security context (section 3 AudioMeta). Empty means the session's
+	// own socket. A RESULT like WaylandSocket, filled in per app once the context exists.
+	PipeWireSocket string
 }

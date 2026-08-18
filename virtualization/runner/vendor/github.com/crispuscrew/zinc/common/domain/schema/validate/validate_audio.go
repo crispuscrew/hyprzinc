@@ -92,17 +92,22 @@ func audioWarnings(cfg schema.AppConfig) []string {
 		return nil
 	}
 	var warns []string
-	if !cfg.AudioMeta.Microphone.Default {
+	// Microphone: none is enforced now - the runner gives the app a socket of its own under a
+	// PipeWire security context and then takes away its permission on every capture node - so
+	// there is nothing to warn about. What is worth saying is that the enforcement needs a
+	// daemon that implements a security context; on one that does not, the app is given the
+	// session socket and the launch says so on stderr rather than pretending.
+	//
+	// Monitor is the one direction that cannot be enforced this way, and the reason is
+	// structural rather than unfinished work: a sink's .monitor is a set of ports on the sink
+	// node, not a node of its own, so there is no object to deny that is not also the object
+	// the app needs in order to play at all.
+	if !cfg.AudioMeta.Monitor.Default && cfg.AudioMeta.Playback.Default {
 		warns = append(warns,
-			"AudioMeta: asking for a session audio device (default) mounts the session's PipeWire socket, which grants this app "+
-				"microphone capture too. Microphone: none is not yet enforced for a container. Name exact "+
-				"/dev/snd nodes instead if the app must not be able to listen.")
-	}
-	if !cfg.AudioMeta.Monitor.Default {
-		warns = append(warns,
-			"AudioMeta: the PipeWire socket also exposes every sink's .monitor source, so this app can record "+
-				"what OTHER apps are playing. Monitor: none is not yet enforced for a container. A device list "+
-				"avoids it, because ALSA nodes carry no other application's stream.")
+			"AudioMeta: Monitor: none cannot be enforced alongside Playback: default. A sink's .monitor "+
+				"source is a set of ports on the sink this app plays to, not a separate object, so denying "+
+				"it would mean denying playback. Microphone: none IS enforced. Name exact /dev/snd nodes "+
+				"if the app must not be able to record other applications at all.")
 	}
 	return warns
 }

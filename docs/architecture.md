@@ -155,10 +155,15 @@ AudioMeta:                       # one grant per capability; absent means none
 Capabilities: []                 # extra `--cap-add` entries, on top of the drop-all baseline
 ```
 
-**Volumes.** Each `Volume` is explicit; there is no implicit home access. The runner wires
-only **explicit host bind mounts** today (`HostMounted: true` with a `HostMount` path): it
-maps `HostMount:InnerMount` with `ro`/`rw` from `Writable` and `noexec`/`exec` from
-`Executable`. Anonymous and `SizeLimited` volumes are schema-defined but not wired yet.
+**Volumes.** Each `Volume` is explicit; there is no implicit home access. A volume with
+`HostMounted: true` and a `HostMount` path is a bind mount: `HostMount:InnerMount`, with
+`ro`/`rw` from `Writable` and `noexec`/`exec` from `Executable`.
+
+A volume with no host path is scratch space rather than a location on the host, and is
+mounted as a tmpfs at `InnerMount`, always `nosuid,nodev`, with the same `Writable` and
+`Executable` defaults. `SizeLimited` with `SizeLimitMiB` becomes `tmpfs-size`, so the ceiling
+is held by the kernel: a container writing past it gets ENOSPC. Left off, the size is
+podman's default of half the host's RAM.
 
 A bind mount can also be added for a single run without editing the app file, via a
 repeatable `-v`/`--volume` flag on `zcr run`:
@@ -930,8 +935,7 @@ never silently mis-enforced. Rejected in this build:
 `$XDG_CONFIG_HOME/zinc/apps/<app>/configs/<BundlePath>`, read-only unless `Writable` says
 otherwise. Per app rather than per instance: a config file is content the app was authored
 with, so every instance reads the same one, and per-instance content is runtime state under
-the state directory instead. Still deferred at the mount layer: anonymous and size-limited
-volumes; only explicit host bind mounts and these bundle files are wired (section 3).
+the state directory instead.
 
 ### 6.6 Dependency startup ordering
 

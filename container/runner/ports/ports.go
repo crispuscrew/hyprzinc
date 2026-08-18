@@ -122,6 +122,21 @@ type DisplayBroker interface {
 	Establish(addr paths.Address, cfg schema.AppConfig, opt options.HostOptions) (string, error)
 }
 
+// AudioBroker gives an app a PipeWire socket of its own, created under a security context, and
+// holds it to the directions its config granted (section 3 AudioMeta). Adapter:
+// adapters/pipewirectx.
+//
+// A sibling of DisplayBroker and shaped the same way, with one difference worth knowing: a
+// PipeWire security context sets identity but not permissions - the session manager grants a
+// restricted client enough to open a microphone - so the adapter also sets the permissions
+// itself, and therefore keeps a process running for as long as the app does.
+type AudioBroker interface {
+	// Establish creates the socket and returns the path to mount. An empty path means "mount the
+	// session's own", which is the answer for an app that asked for no session audio and on a
+	// daemon with no security context.
+	Establish(addr paths.Address, cfg schema.AppConfig, opt options.HostOptions) (string, error)
+}
+
 // NetEnforcer establishes and enforces an app's network egress - THE swap point. Today
 // adapters/netenforce drives NetworkLists onto a pasta netns via nft. Callers gate unsupported
 // configs before invoking it (the app layer's checkNetwork).

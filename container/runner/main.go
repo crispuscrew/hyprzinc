@@ -31,6 +31,7 @@ import (
 	"github.com/crispuscrew/zinc/common/domain/schema"
 	"github.com/crispuscrew/zinc/common/domain/schema/validate"
 	"github.com/crispuscrew/zinc/container/runner/adapters/host"
+	"github.com/crispuscrew/zinc/container/runner/adapters/pipewirectx"
 	"github.com/crispuscrew/zinc/container/runner/adapters/podman"
 	"github.com/crispuscrew/zinc/container/runner/adapters/waylandctx"
 	"github.com/crispuscrew/zinc/container/runner/app"
@@ -170,6 +171,11 @@ func run(argv []string) error {
 		// It creates the app's own compositor socket, reports back, and holds the
 		// revocation descriptor open until the app container is gone.
 		return cmdWaylandHolder(opt, rest)
+	case pipewirectx.HoldCommand:
+		// Hidden: the per-app audio holder. It creates the app's own PipeWire socket under a
+		// security context, holds the revocation descriptor, and sets the app's permissions
+		// so the directions its config did not grant stay unreachable.
+		return cmdPipeWireHolder(opt, rest)
 	case "ps":
 		return cmdPs(svc)
 	case "net":
@@ -504,6 +510,32 @@ func cmdWaylandHolder(opt options.HostOptions, argv []string) error {
 		return fmt.Errorf("usage: zcr %s <app[@instance]>", waylandctx.HoldCommand)
 	}
 	return waylandctx.Hold(addr, opt, podman.WaitGone)
+}
+
+// cmdPipeWireHolder is the hidden holder process owning one app's PipeWire security context and
+// its permissions (section 3 AudioMeta). Separate from the Wayland holder because it outlives the
+// launch for a second reason: the graph changes while an app runs, and a microphone plugged in an
+// hour later is a new object the app would otherwise hold the default permission on.
+func cmdPipeWireHolder(opt options.HostOptions, argv []string) error {
+	usage := fmt.Errorf("usage: zcr %s <app[@instance]> [%s]", pipewirectx.HoldCommand, pipewirectx.MicrophoneFlag)
+	if len(argv) < 1 || len(argv) > 2 {
+		return usage
+	}
+	addr, err := paths.ParseAddress(argv[0])
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(addr.App) == "" {
+		return usage
+	}
+	capture := false
+	if len(argv) == 2 {
+		if argv[1] != pipewirectx.MicrophoneFlag {
+			return usage
+		}
+		capture = true
+	}
+	return pipewirectx.Hold(addr, capture, opt, podman.WaitGone)
 }
 
 // cmdPs prints the apps podman reports as running, one per line and sorted, so a

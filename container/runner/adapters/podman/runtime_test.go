@@ -754,3 +754,37 @@ func TestAppRunArgs_ConfigSourceComesFromTheResolvedBundle(t *testing.T) {
 		t.Errorf("config mount = %v, want one at %q", args, want)
 	}
 }
+
+// A volume with no host path is scratch space, and SizeLimitMiB has to reach the kernel:
+// until this was wired, such a volume produced no argument at all and the size was a number
+// in a file that nothing read.
+func TestAppRunArgs_AnonymousVolumeIsASizedTmpfs(t *testing.T) {
+	cfg := schema.AppConfig{
+		AppNameID: "scratch-app",
+		ImageMeta: schema.ImageMeta{Image: "img@sha256:abc"},
+		Volumes: []schema.Volume{
+			{InnerMount: "/data", Writable: true, SizeLimited: true, SizeLimitMiB: 256},
+			{InnerMount: "/ro-scratch"},
+			{InnerMount: "/work", HostMounted: true, HostMount: "/home/user/code", Writable: true},
+		},
+	}
+	got := appArgs(t, cfg, baseOpts(), nil)
+
+	assertContainsSeq(t, got, "--mount", "type=tmpfs,destination=/data,nosuid,nodev,noexec,tmpfs-size=256m")
+	// Not writable and not executable: the defaults a bind mount gets.
+	assertContainsSeq(t, got, "--mount", "type=tmpfs,destination=/ro-scratch,nosuid,nodev,ro,noexec")
+	// A host-mounted volume in the same list is still a bind mount.
+	assertContainsSeq(t, got, "-v", "/home/user/code:/work:rw,noexec")
+}
+
+// SizeLimited off means podman's default tmpfs size, not a zero-byte one.
+func TestAppRunArgs_UnlimitedAnonymousVolumeStatesNoSize(t *testing.T) {
+	cfg := schema.AppConfig{
+		AppNameID: "scratch-app",
+		ImageMeta: schema.ImageMeta{Image: "img@sha256:abc"},
+		Volumes:   []schema.Volume{{InnerMount: "/tmp/scratch", Writable: true, Executable: true}},
+	}
+	got := appArgs(t, cfg, baseOpts(), nil)
+	assertContainsSeq(t, got, "--mount", "type=tmpfs,destination=/tmp/scratch,nosuid,nodev")
+	mustNotContain(t, got, "tmpfs-size=0m")
+}

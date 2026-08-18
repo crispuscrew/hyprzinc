@@ -236,11 +236,15 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 	}
 
 	// Audio (section 3 AudioMeta): the config states a direction and a strength, this picks the
-	// transport. `default` means the PipeWire socket, mounted once however many directions asked. The
-	// socket grants both directions regardless of what the config asked for, so only the device-list
-	// form is real enforcement; validate.Warnings says so.
+	// transport. `default` means a PipeWire socket, mounted once however many directions asked for
+	// it. The socket is the app's OWN when a security context was established for it
+	// (opt.PipeWireSocket), and the session's own otherwise - the container-side path is the same
+	// either way, so an app needs no per-mode configuration.
 	if audioUsesSession(cfg.AudioMeta) && opt.RuntimeDir != "" {
-		pipewireSock := filepath.Join(opt.RuntimeDir, "pipewire-0")
+		pipewireSock := opt.PipeWireSocket
+		if pipewireSock == "" {
+			pipewireSock = filepath.Join(opt.RuntimeDir, "pipewire-0")
+		}
 		args = append(args, "-v", pipewireSock+":"+filepath.Join(ctrXDGRuntime, "pipewire-0")+":ro")
 		exportRuntimeDir()
 	}
@@ -272,22 +276,24 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		args = append(args, "-v", filepath.Join(bundle, configFile.BundlePath)+":"+configFile.InnerMount+":"+mountOpts)
 	}
 
-	// Host-mounted volumes (section 3 Volumes). Anonymous/size-limited volumes are deferred;
-	// only explicit host bind mounts are wired here.
+	// Volumes (section 3). A volume with a host path is a bind mount; one without is scratch
+	// space the app is given rather than a location on the host, and it is a tmpfs, which is
+	// what makes SizeLimitMiB a limit the kernel holds rather than a number in a file.
 	for _, volume := range cfg.Volumes {
-		if !volume.HostMounted || strings.TrimSpace(volume.HostMount) == "" {
+		if volume.HostMounted && strings.TrimSpace(volume.HostMount) != "" {
+			mountOpts := "ro"
+			if volume.Writable {
+				mountOpts = "rw"
+			}
+			if volume.Executable {
+				mountOpts += ",exec"
+			} else {
+				mountOpts += ",noexec"
+			}
+			args = append(args, "-v", volume.HostMount+":"+volume.InnerMount+":"+mountOpts)
 			continue
 		}
-		mountOpts := "ro"
-		if volume.Writable {
-			mountOpts = "rw"
-		}
-		if volume.Executable {
-			mountOpts += ",exec"
-		} else {
-			mountOpts += ",noexec"
-		}
-		args = append(args, "-v", volume.HostMount+":"+volume.InnerMount+":"+mountOpts)
+		args = append(args, "--mount", tmpfsMount(volume))
 	}
 
 	// SSH/GPG keys (section 3 Keys) - RO file mounts into the container home.
@@ -319,6 +325,26 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		args = append(args, HolderCmd()...)
 	}
 	return args, nil
+}
+
+// tmpfsMount renders an anonymous volume as a podman --mount value. nosuid and nodev always,
+// because scratch space is never a place to gain privilege or reach a device; noexec unless the
+// config asked otherwise, matching a bind mount's default.
+//
+// An unlimited tmpfs is half of host RAM, which is podman's default and the honest reading of
+// SizeLimited being off. Validation refuses SizeLimited without a positive size.
+func tmpfsMount(volume schema.Volume) string {
+	opts := []string{"type=tmpfs", "destination=" + volume.InnerMount, "nosuid", "nodev"}
+	if !volume.Writable {
+		opts = append(opts, "ro")
+	}
+	if !volume.Executable {
+		opts = append(opts, "noexec")
+	}
+	if volume.SizeLimited {
+		opts = append(opts, fmt.Sprintf("tmpfs-size=%dm", volume.SizeLimitMiB))
+	}
+	return strings.Join(opts, ",")
 }
 
 // userArgs decides who the app runs as inside the container. KeepUserID is a separate question:

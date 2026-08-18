@@ -123,6 +123,10 @@ func (svc Service) ensureHolder(cfg schema.AppConfig, opt options.HostOptions) e
 	if err != nil {
 		return errors.Join(fmt.Errorf("start %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
 	}
+	opt, err = svc.withAudio(cfg, opt)
+	if err != nil {
+		return errors.Join(fmt.Errorf("start %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
+	}
 	appArgs, aerr := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg))
 	if aerr != nil {
 		return errors.Join(aerr, svc.teardown(cfg, len(steps) > 0))
