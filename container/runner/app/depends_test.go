@@ -122,7 +122,7 @@ func depApp(name string, deps ...string) schema.AppConfig {
 // which under `go test` would re-exec the test binary. The display wiring has its own tests
 // (display_test.go) with a broker that only records.
 func depSvc(store ports.Store, engine ports.Runtime) Service {
-	return New(store, engine, nil, nil, netenforce.Enforcer{}, dbusproxy.Broker{}, nil, nil)
+	return New(store, engine, nil, nil, netenforce.Enforcer{}, dbusproxy.Broker{}, nil, nil, nil)
 }
 
 // web → vpn → base: each dependency (and its own dependencies) must come up before the

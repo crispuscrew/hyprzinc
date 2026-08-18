@@ -35,7 +35,12 @@ const (
 // /run/zinc (the XDG runtime dir the Wayland and Pipewire sockets share) because
 // DBUS_SESSION_BUS_ADDRESS names this path explicitly and nothing benefits from it being
 // adjacent to sockets the app reaches by a different convention.
-const ctrAppSocket = "/run/zinc-bus/bus"
+const ctrAppSocket = ContainerSocket
+
+// ContainerSocket is that path, exported because the notification filter stands in front of
+// this proxy and has to land on the same path inside the container: which of the two the app is
+// talking to is not the app's business.
+const ContainerSocket = "/run/zinc-bus/bus"
 
 // ctrRuntimeRoot is where the host XDG_RUNTIME_DIR is mounted for the mkdir/rm helper steps.
 // Only those two ever see it; the app does not.

@@ -8,6 +8,7 @@ import (
 	"github.com/crispuscrew/zinc/container/runner/adapters/fs"
 	"github.com/crispuscrew/zinc/container/runner/adapters/host"
 	"github.com/crispuscrew/zinc/container/runner/adapters/netenforce"
+	"github.com/crispuscrew/zinc/container/runner/adapters/notifyfilter"
 	"github.com/crispuscrew/zinc/container/runner/adapters/pipewirectx"
 	"github.com/crispuscrew/zinc/container/runner/adapters/podman"
 	"github.com/crispuscrew/zinc/container/runner/adapters/waylandctx"
@@ -21,7 +22,7 @@ import (
 func Service(store ports.Store) app.Service {
 	opt := host.Options()
 	return app.New(store, podman.Runtime{}, podman.Builder{}, podman.Resolver{}, netenforce.Enforcer{},
-		dbusproxy.New(opt.NetfilterImage, opt), waylandctx.Broker{}, pipewirectx.Broker{})
+		dbusproxy.New(opt.NetfilterImage, opt), waylandctx.Broker{}, pipewirectx.Broker{}, notifyfilter.Broker{})
 }
 
 // DefaultService builds the production service against the standard on-disk store

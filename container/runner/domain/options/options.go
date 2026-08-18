@@ -30,4 +30,8 @@ type HostOptions struct {
 	// created under a PipeWire security context (section 3 AudioMeta). Empty means the session's
 	// own socket. A RESULT like WaylandSocket, filled in per app once the context exists.
 	PipeWireSocket string
+	// NotifySocket is the host path of the notification filter's socket, when a config asked for
+	// one. The app is given this in place of the D-Bus proxy's own, on the same container path,
+	// so the filter is invisible to it. Another RESULT rather than a host fact.
+	NotifySocket string
 }

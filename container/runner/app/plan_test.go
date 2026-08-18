@@ -16,7 +16,7 @@ import (
 // display broker - which is all Plan and (validation-only) Launch need. Plan is pure
 // (AppRunArgs builds argv without I/O), so these tests run with no podman present.
 func planSvc() Service {
-	return New(nil, podman.Runtime{}, nil, nil, netenforce.Enforcer{}, dbusproxy.Broker{}, nil, nil)
+	return New(nil, podman.Runtime{}, nil, nil, netenforce.Enforcer{}, dbusproxy.Broker{}, nil, nil, nil)
 }
 
 func baseOpts() options.HostOptions {

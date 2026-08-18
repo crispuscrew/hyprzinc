@@ -20,7 +20,7 @@ func renameSvc(t *testing.T, engine ports.Runtime, apps ...schema.AppConfig) (Se
 			t.Fatalf("seed %s: %v", cfg.AppNameID, err)
 		}
 	}
-	return New(sto, engine, nil, nil, nil, nil, nil, nil), sto
+	return New(sto, engine, nil, nil, nil, nil, nil, nil, nil), sto
 }
 
 // A plain rename rewrites AppNameID, persists under the new name, and removes the old

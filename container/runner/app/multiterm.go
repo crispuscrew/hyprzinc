@@ -127,7 +127,11 @@ func (svc Service) ensureHolder(cfg schema.AppConfig, opt options.HostOptions) e
 	if err != nil {
 		return errors.Join(fmt.Errorf("start %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
 	}
-	appArgs, aerr := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg))
+	opt, err = svc.withNotify(cfg, opt)
+	if err != nil {
+		return errors.Join(fmt.Errorf("start %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
+	}
+	appArgs, aerr := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg, opt))
 	if aerr != nil {
 		return errors.Join(aerr, svc.teardown(cfg, len(steps) > 0))
 	}

@@ -137,6 +137,18 @@ type AudioBroker interface {
 	Establish(addr paths.Address, cfg schema.AppConfig, opt options.HostOptions) (string, error)
 }
 
+// NotifyBroker holds an app to its NotificationMeta by filtering the one bus call that carries
+// a notification (section 3). Adapter: adapters/notifyfilter.
+//
+// Separate from DBusBroker because it answers a different question. That one decides which names
+// an app may reach, which xdg-dbus-proxy can enforce; this one decides what an app may put in a
+// message, which needs something that reads message bodies.
+type NotifyBroker interface {
+	// Establish starts the filter and returns the socket the app should be given instead of the
+	// proxy's. An empty path means no policy applies, and the app keeps the proxy's own socket.
+	Establish(addr paths.Address, cfg schema.AppConfig, opt options.HostOptions) (string, error)
+}
+
 // NetEnforcer establishes and enforces an app's network egress - THE swap point. Today
 // adapters/netenforce drives NetworkLists onto a pasta netns via nft. Callers gate unsupported
 // configs before invoking it (the app layer's checkNetwork).

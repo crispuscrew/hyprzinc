@@ -128,14 +128,14 @@ NetworkMeta:
     #   Domains                  # resolved AT LAUNCH into addresses; a snapshot, not name
     #                            # filtering, and not refreshed while the app runs (6.2)
 
-NotificationMeta:                # NOT implemented - a non-default value is refused, not ignored
-  Disabled: false
-  Silenced: false
+NotificationMeta:                # needs DBusMeta.Talk to reach org.freedesktop.Notifications
+  Disabled: false                # true = the call is refused, and the app is told
+  Silenced: false                # true = accepted and dropped; the app sees success
   UseCustomPrefix: false
-  CustomPrefix: ""
-  AllowedActions: false
-  AllowedProlonged: false
-  AllowedLinks: false
+  CustomPrefix: ""               # prepended to every summary
+  AllowedActions: false          # false = the action buttons are stripped
+  AllowedProlonged: false        # false = expire_timeout is clamped to 10s
+  AllowedLinks: false            # false = anchor markup is stripped from the body
 
 Env:                             # the app's environment; Zinc's own variables are refused
   LANG: en_US.UTF-8
@@ -197,10 +197,8 @@ security context, where the compositor implements one - 5.2),
 GPU device, the theme bundle, audio (the PipeWire socket, or named `/dev/snd` nodes), explicit host bind
 mounts, SSH/GPG key mounts, the entrypoint override, and the terminal / multiterminal /
 background / keep-alive lifecycle. `ResourcesMeta` (`--cpus`, `--memory`, `--memory-swap`, `--pids-limit`) and
-`InternalUserMeta` (`--user`, `--userns=keep-id`) are enforced now. **Schema-defined
-and not wired into the launch:** `NotificationMeta`, which is refused rather than ignored -
-Zinc has no notification path, so accepting `Silenced` would tell an author their app is
-muted while it notifies freely.
+`InternalUserMeta` (`--user`, `--userns=keep-id`) are enforced now, and so is
+`NotificationMeta` (see below). **Every field in the schema is wired into the launch.**
 
 `Configs` was the one exception to that rule until schema v3: it validated, expanded
 placeholders, was counted by `zc` and refused for VM apps, and then produced no mount, so an
@@ -936,6 +934,27 @@ never silently mis-enforced. Rejected in this build:
 otherwise. Per app rather than per instance: a config file is content the app was authored
 with, so every instance reads the same one, and per-instance content is runtime state under
 the state directory instead.
+
+**Notifications.** `NotificationMeta` is enforced by a filter that stands between the app and
+its D-Bus proxy, so the chain becomes app -> filter -> `xdg-dbus-proxy` -> session bus. It
+exists because the proxy filters by NAME: whether an app may reach
+`org.freedesktop.Notifications` is a question `xdg-dbus-proxy` answers, and what an app may put
+IN a notification is a question about a message body.
+
+The filter reads only `Notify` calls and forwards everything else as the bytes it arrived as,
+file descriptors included - the same connection carries the app's portal traffic, and a relay
+that re-encoded or dropped that would break file dialogs and screen sharing. `Disabled` is
+answered with `AccessDenied`, so the app is told; `Silenced` is answered with a plausible
+notification id, so the app cannot tell its notification went nowhere. `UseCustomPrefix`
+rewrites the summary, `AllowedActions` drops the action list, `AllowedLinks` strips anchor
+markup from the body, and `AllowedProlonged` clamps an expire timeout to ten seconds - a
+notification that never expires owns a corner of the screen, which is a thing to grant.
+
+A `Notify` call is decoded and re-encoded rather than patched, because D-Bus alignment is
+measured from the start of the message: changing the length of the summary moves the padding
+inside the hints dictionary that follows it. A zero `NotificationMeta` keeps the filter out of
+the launch entirely, and validation refuses the block on an app whose `DBusMeta` cannot reach
+the notification service, since a policy over traffic that cannot happen is not a policy.
 
 ### 6.6 Dependency startup ordering
 

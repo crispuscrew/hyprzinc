@@ -28,11 +28,12 @@ type Service struct {
 	bus      ports.DBusBroker
 	display  ports.DisplayBroker
 	audio    ports.AudioBroker
+	notify   ports.NotifyBroker
 }
 
 // New wires the ports into a Service.
-func New(store ports.Store, runtime ports.Runtime, builder ports.ImageBuilder, resolver ports.ImageResolver, net ports.NetEnforcer, bus ports.DBusBroker, display ports.DisplayBroker, audio ports.AudioBroker) Service {
-	return Service{store: store, runtime: runtime, builder: builder, resolver: resolver, net: net, bus: bus, display: display, audio: audio}
+func New(store ports.Store, runtime ports.Runtime, builder ports.ImageBuilder, resolver ports.ImageResolver, net ports.NetEnforcer, bus ports.DBusBroker, display ports.DisplayBroker, audio ports.AudioBroker, notify ports.NotifyBroker) Service {
+	return Service{store: store, runtime: runtime, builder: builder, resolver: resolver, net: net, bus: bus, display: display, audio: audio, notify: notify}
 }
 
 // address recovers the app and instance halves of a runtime name. The Wayland security context is
@@ -90,8 +91,29 @@ func (svc Service) withAudio(cfg schema.AppConfig, opt options.HostOptions) (opt
 // behalf: the network attachment from the enforcer, and the filtered bus socket from the
 // broker. Composed in one place so Plan, launch and OpenTerminal cannot drift apart on what
 // the app is actually attached to.
-func (svc Service) attachFlags(cfg schema.AppConfig) []string {
-	return append(svc.net.RunFlags(cfg), svc.bus.RunFlags(cfg)...)
+// The bus flags are the proxy's own unless a notification filter was established, in which case
+// the app is attached to the filter instead and the proxy becomes the filter's upstream. Only
+// one of the two may name the app's bus socket, or the app would carry two mounts for one path.
+func (svc Service) attachFlags(cfg schema.AppConfig, opt options.HostOptions) []string {
+	flags := svc.net.RunFlags(cfg)
+	if opt.NotifySocket != "" {
+		return flags
+	}
+	return append(flags, svc.bus.RunFlags(cfg)...)
+}
+
+// withNotify starts the app's notification filter, if its config asks for one, and returns the
+// options its container should be built from. Taken and returned by value like its siblings.
+func (svc Service) withNotify(cfg schema.AppConfig, opt options.HostOptions) (options.HostOptions, error) {
+	if svc.notify == nil {
+		return opt, nil
+	}
+	socket, err := svc.notify.Establish(svc.address(cfg.AppNameID), cfg, opt)
+	if err != nil {
+		return opt, err
+	}
+	opt.NotifySocket = socket
+	return opt, nil
 }
 
 // prepareSteps are the ordered pre-app steps: the enforcer's (establish and lock the netns)
@@ -127,7 +149,7 @@ func (svc Service) Plan(cfg schema.AppConfig, opt options.HostOptions) ([]ports.
 	if err := checkNetwork(cfg); err != nil {
 		return nil, err
 	}
-	appArgs, err := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg))
+	appArgs, err := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg, opt))
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +222,11 @@ func (svc Service) launch(cfg schema.AppConfig, opt options.HostOptions, chain [
 	if err != nil {
 		return errors.Join(fmt.Errorf("launch %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
 	}
-	appArgs, err := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg))
+	opt, err = svc.withNotify(cfg, opt)
+	if err != nil {
+		return errors.Join(fmt.Errorf("launch %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
+	}
+	appArgs, err := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg, opt))
 	if err != nil {
 		return errors.Join(err, svc.teardown(cfg, len(steps) > 0))
 	}

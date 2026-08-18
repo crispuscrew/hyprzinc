@@ -133,17 +133,75 @@ func TestInternalUser_BothHalvesOrNeither(t *testing.T) {
 // Nothing in Zinc proxies or filters notifications, so every field in this block is inert.
 // Accepting Silenced would tell an author their app is muted while it notifies freely; an
 // unimplemented mechanism is refused rather than mis-enforced.
-func TestNotifications_RefusedUntilImplemented(t *testing.T) {
+// A notification policy is enforced by a filter in the app's bus path, so it needs a bus. An
+// app with none cannot notify at all, and a policy over traffic that cannot happen would read
+// as a control while controlling nothing.
+func TestNotifications_NeedABus(t *testing.T) {
 	cfg := baseCfg()
 	cfg.NotificationMeta.Silenced = true
 	err := Validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "NotificationMeta") {
-		t.Fatalf("a set notification field: want a NotificationMeta error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "needs a session bus") {
+		t.Fatalf("a policy with no DBusMeta: want a bus error, got: %v", err)
+	}
+
+	// A bus that cannot reach the notification service is the same gap by another route.
+	cfg.InternalUserMeta.KeepUserID = true // a filtered bus is a uid agreement with the proxy
+	cfg.DBusMeta.Talk = []string{"org.freedesktop.portal.Desktop"}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "not allowed to reach") {
+		t.Fatalf("a bus without the notification name should be refused, got: %v", err)
+	}
+
+	// With the grant in place the policy is enforceable, so it validates.
+	cfg.DBusMeta.Talk = []string{"org.freedesktop.Notifications"}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("a policy on an app that may notify should pass, got: %v", err)
 	}
 
 	// The zero value is what every existing app has, and must stay legal.
 	if err := Validate(baseCfg()); err != nil {
 		t.Fatalf("an untouched notification block should pass, got: %v", err)
+	}
+}
+
+// Disabled and Silenced answer the same call in opposite ways, so a config cannot ask for both.
+func TestNotifications_DisabledAndSilencedAreOpposites(t *testing.T) {
+	cfg := baseCfg()
+	cfg.InternalUserMeta.KeepUserID = true
+	cfg.DBusMeta.Talk = []string{"org.freedesktop.Notifications"}
+	cfg.NotificationMeta.Disabled = true
+	cfg.NotificationMeta.Silenced = true
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "opposites") {
+		t.Fatalf("want a contradiction error, got: %v", err)
+	}
+}
+
+// A prefix that is written but not switched on reads as if it were in force, which is the same
+// trap every other unenforced field in this schema is refused for.
+func TestNotifications_PrefixAndItsSwitchMustAgree(t *testing.T) {
+	cfg := baseCfg()
+	cfg.InternalUserMeta.KeepUserID = true
+	cfg.DBusMeta.Talk = []string{"org.freedesktop.Notifications"}
+
+	cfg.NotificationMeta.UseCustomPrefix = true
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "CustomPrefix: required") {
+		t.Fatalf("UseCustomPrefix with no prefix should be refused, got: %v", err)
+	}
+
+	cfg.NotificationMeta.UseCustomPrefix = false
+	cfg.NotificationMeta.CustomPrefix = "[work]"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "set UseCustomPrefix") {
+		t.Fatalf("a prefix with the switch off should be refused, got: %v", err)
+	}
+
+	cfg.NotificationMeta.UseCustomPrefix = true
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("a prefix and its switch together should pass, got: %v", err)
+	}
+
+	// The prefix lands in a summary a notification server renders.
+	cfg.NotificationMeta.CustomPrefix = "[work]\nSystem"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "single line") {
+		t.Fatalf("a prefix carrying a newline should be refused, got: %v", err)
 	}
 }
 

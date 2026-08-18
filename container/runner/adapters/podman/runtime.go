@@ -7,6 +7,7 @@ package podman
 import (
 	"bytes"
 	"fmt"
+	"github.com/crispuscrew/zinc/container/runner/adapters/dbusproxy"
 	"maps"
 	"os"
 	"os/exec"
@@ -233,6 +234,16 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 	// space still runs; what stops is writing into the image itself.
 	if cfg.ReadOnlyRootfs {
 		args = append(args, "--read-only")
+	}
+
+	// The notification filter, when one was established (section 3 NotificationMeta). It lands
+	// on the same container path the D-Bus proxy's socket would have, because which of the two
+	// the app is talking to is not the app's business - and the app layer leaves the proxy's own
+	// flags off when this is set, so exactly one of them names that path.
+	if opt.NotifySocket != "" {
+		args = append(args,
+			"-v", opt.NotifySocket+":"+dbusproxy.ContainerSocket+":rw",
+			"-e", "DBUS_SESSION_BUS_ADDRESS=unix:path="+dbusproxy.ContainerSocket)
 	}
 
 	// Audio (section 3 AudioMeta): the config states a direction and a strength, this picks the

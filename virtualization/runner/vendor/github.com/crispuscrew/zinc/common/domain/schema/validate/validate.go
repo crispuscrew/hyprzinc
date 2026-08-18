@@ -33,7 +33,7 @@ func Validate(cfg schema.AppConfig) error {
 	checkContainerImage(cfg.ImageMeta.Image, add)
 	checkResources(cfg.ResourcesMeta, add)
 	checkInternalUser(cfg.InternalUserMeta, add)
-	checkNotifications(cfg.NotificationMeta, add)
+	checkNotifications(cfg, add)
 	checkDBus(cfg, add)
 	checkSourceTag(cfg.ImageMeta.SourceTag, add)
 
@@ -233,11 +233,54 @@ func checkInternalUser(user schema.InternalUserMeta, add addFunc) {
 // checkNotifications fails closed on a block that is defined and does nothing: Zinc has no
 // notification path yet, so accepting Silenced would tell an author their app is muted while it
 // notifies freely. The zero value stays legal.
-func checkNotifications(notify schema.NotificationMeta, add addFunc) {
+// checkNotifications screens the notification policy. The zero block is the default and means
+// "whatever the desktop does", which keeps the filter out of the launch entirely.
+func checkNotifications(cfg schema.AppConfig, add addFunc) {
+	notify := cfg.NotificationMeta
 	if notify == (schema.NotificationMeta{}) {
 		return
 	}
-	add("NotificationMeta: not implemented - Zinc does not proxy or filter app notifications yet, so none of these fields would be enforced; leave the block at its defaults")
+	// The filter stands in the app's bus path, so an app with no bus has no way to notify and
+	// nothing for this block to hold it to. Accepting it would be a policy over traffic that
+	// cannot happen, which reads as a control while controlling nothing.
+	if cfg.DBusMeta.IsZero() {
+		add("NotificationMeta: needs a session bus - notifications travel over D-Bus, so an app with an empty DBusMeta cannot send one. Add %q to DBusMeta.Talk, or leave this block at its defaults", notifyBusName)
+	} else if !talksTo(cfg.DBusMeta.Talk, notifyBusName) {
+		add("NotificationMeta: this app is not allowed to reach %s, so nothing it says here applies. Add that name to DBusMeta.Talk, or leave this block at its defaults", notifyBusName)
+	}
+	// Opposites: Disabled refuses the call and tells the app so, Silenced accepts it and drops
+	// it quietly. Setting both is a config that cannot state which answer it wants.
+	if notify.Disabled && notify.Silenced {
+		add("NotificationMeta: Disabled and Silenced are opposites - Disabled refuses the call and the app is told, Silenced accepts it and shows nothing. Pick one")
+	}
+	if notify.UseCustomPrefix && strings.TrimSpace(notify.CustomPrefix) == "" {
+		add("NotificationMeta.CustomPrefix: required when UseCustomPrefix is set")
+	}
+	if !notify.UseCustomPrefix && strings.TrimSpace(notify.CustomPrefix) != "" {
+		add("NotificationMeta.CustomPrefix %q: set UseCustomPrefix to apply it, or clear it - a prefix that is written but not used reads as if it were in force", notify.CustomPrefix)
+	}
+	// The prefix is inserted into a summary the notification server renders, so it gets the
+	// same screening as any other value that leaves this config.
+	if hasControl(notify.CustomPrefix) {
+		add("NotificationMeta.CustomPrefix: must be a single line with no control characters")
+	}
+}
+
+// notifyBusName is the service a notification is sent to.
+const notifyBusName = "org.freedesktop.Notifications"
+
+// talksTo reports whether a Talk list reaches name, wildcards included.
+func talksTo(talk []string, name string) bool {
+	for _, entry := range talk {
+		entry = strings.TrimSpace(entry)
+		if entry == name {
+			return true
+		}
+		if base, ok := strings.CutSuffix(entry, ".*"); ok && strings.HasPrefix(name, base+".") {
+			return true
+		}
+	}
+	return false
 }
 
 // Warnings returns non-fatal create-time advisories (zc); nothing here blocks save or

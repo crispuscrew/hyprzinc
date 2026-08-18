@@ -30,7 +30,9 @@ import (
 
 	"github.com/crispuscrew/zinc/common/domain/schema"
 	"github.com/crispuscrew/zinc/common/domain/schema/validate"
+	"github.com/crispuscrew/zinc/container/runner/adapters/dbusproxy"
 	"github.com/crispuscrew/zinc/container/runner/adapters/host"
+	"github.com/crispuscrew/zinc/container/runner/adapters/notifyfilter"
 	"github.com/crispuscrew/zinc/container/runner/adapters/pipewirectx"
 	"github.com/crispuscrew/zinc/container/runner/adapters/podman"
 	"github.com/crispuscrew/zinc/container/runner/adapters/waylandctx"
@@ -176,6 +178,10 @@ func run(argv []string) error {
 		// security context, holds the revocation descriptor, and sets the app's permissions
 		// so the directions its config did not grant stay unreachable.
 		return cmdPipeWireHolder(opt, rest)
+	case notifyfilter.HoldCommand:
+		// Hidden: the per-app notification filter. It serves the socket the app was given and
+		// relays to the D-Bus proxy behind it, rewriting the calls NotificationMeta narrows.
+		return cmdNotifyFilter(svc, opt, rest)
 	case "ps":
 		return cmdPs(svc)
 	case "net":
@@ -510,6 +516,24 @@ func cmdWaylandHolder(opt options.HostOptions, argv []string) error {
 		return fmt.Errorf("usage: zcr %s <app[@instance]>", waylandctx.HoldCommand)
 	}
 	return waylandctx.Hold(addr, opt, podman.WaitGone)
+}
+
+// cmdNotifyFilter is the hidden notification filter (section 3 NotificationMeta). It takes the
+// app name rather than an address: the filter is per app like its bus and its bundle, because
+// what it enforces is authored content rather than anything an instance carries.
+func cmdNotifyFilter(svc app.Service, opt options.HostOptions, argv []string) error {
+	if len(argv) != 1 {
+		return fmt.Errorf("usage: zcr %s <app>", notifyfilter.HoldCommand)
+	}
+	cfg, err := loadApp(svc, argv[0])
+	if err != nil {
+		return err
+	}
+	upstream := dbusproxy.HostSocketPath(opt.RuntimeDir, cfg.AppNameID)
+	if upstream == "" {
+		return fmt.Errorf("%s: no bus socket to filter", cfg.AppNameID)
+	}
+	return notifyfilter.Hold(cfg, upstream, opt, podman.WaitGone)
 }
 
 // cmdPipeWireHolder is the hidden holder process owning one app's PipeWire security context and
