@@ -96,6 +96,12 @@ were silently ignored, and the audio directions were a claim rather than a contr
 
 ### Fixed
 
+- **Releases can be verified.** `make -f release.mk checksums` records the bytes of every shipped
+  binary and `verify` rebuilds and checks them, which is only worth having because CI already
+  proves the builds reproducible. `make -f release.mk tag` makes the tag a signed one, and
+  refuses rather than falling back to unsigned - a release that silently was not signed is worse
+  than one that failed to be.
+
 - **`zcr net` reports what an app is attached to, not what its config asked for.** The posture
   was derived from the file at report time, so editing a YAML changed what the attestation
   surface said about an app that was already running - the file could say "no NetworkLists" while
@@ -244,7 +250,6 @@ a pin covers the bytes of a file, and a file can point somewhere else.
 - A config run from a file path can claim an `AppNameID` that resolves to another app's address,
   forging that app's Wayland `app_id`, container name, bus row and `zcr net` posture.
 - Every guest reaches host services on 127.0.0.1 through user-mode networking's gateway.
-- Release tags are unsigned and there are no published checksums.
 - The multiterminal launch enforces in a detached process with stdio discarded, so a failed
   ruleset load or a rejected security context is reported as a successful launch.
 

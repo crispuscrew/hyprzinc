@@ -24,6 +24,29 @@ versioning a change that invalidates what users already have on disk cannot be a
 calling it 0.9.2 would tell people the upgrade is safe to take without reading anything. The
 migration is in the changelog.
 
+## Cutting a release
+
+The build is reproducible - CI runs `make repro` for every module on every push, which builds
+twice and asserts identical bytes - so a checksum is something anyone can regenerate rather than
+something they have to take on trust. Two commands turn that into something a person who clones
+can check:
+
+```
+make -f release.mk checksums          # build every tool, write SHA256SUMS
+make -f release.mk tag VERSION=0.10.0 # signed, annotated tag
+```
+
+`SHA256SUMS` is committed on the release branch, so the tag covers it. Anyone can then run
+`make -f release.mk verify`, which rebuilds every tool and fails if a binary does not hash to
+what the file records.
+
+The tag is signed, and `make -f release.mk tag` refuses rather than falling back to an unsigned
+one: a release that silently was not signed is worse than one that failed to be, because only the
+first is invisible. It needs `git config user.signingkey` (with `gpg.format=ssh` for an SSH key).
+
+Version numbers live in three places that have to move together, or the flake job fails on the
+one that did not: `flake.nix`, the assertion in `.github/workflows/ci.yml`, and the table above.
+
 **ZDE** (the Zinc Desktop Environment, `zde-niri` / `zde-hypr`) is a separate project
 layered on Zinc: it lives in its own repository with its own release plan. Only the Zinc
 core and its tools (containers, launchers, virtualization) are released from here.
