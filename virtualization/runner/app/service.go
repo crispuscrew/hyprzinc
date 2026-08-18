@@ -16,6 +16,7 @@ import (
 	"github.com/crispuscrew/zinc/virtualization/runner/adapters/firmware"
 	"github.com/crispuscrew/zinc/virtualization/runner/adapters/fs"
 	"github.com/crispuscrew/zinc/virtualization/runner/adapters/machine"
+	"github.com/crispuscrew/zinc/virtualization/runner/adapters/netns"
 	"github.com/crispuscrew/zinc/virtualization/runner/domain/paths"
 	"github.com/crispuscrew/zinc/virtualization/runner/domain/qemu"
 )
@@ -98,7 +99,14 @@ func (svc Service) start(cfg schema.AppConfig, installing bool) error {
 	if err != nil {
 		return err
 	}
-	return svc.Runtime.Start(cfg.AppNameID, qemu.Args(cfg, layout), extraEnv)
+	// A guest that declares egress lists runs inside a namespace those lists are enforced in,
+	// with the ruleset loaded before qemu execs - so there is no window in which the guest has
+	// an unfiltered network, for the same reason a container's pod is locked before its app.
+	argv, ruleset, err := netns.Command(cfg, qemu.Args(cfg, layout))
+	if err != nil {
+		return err
+	}
+	return svc.Runtime.Start(cfg.AppNameID, argv, extraEnv, ruleset)
 }
 
 // machineLayout resolves the host-side pieces a guest's machine needs before qemu starts:

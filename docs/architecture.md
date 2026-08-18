@@ -956,6 +956,26 @@ inside the hints dictionary that follows it. A zero `NotificationMeta` keeps the
 the launch entirely, and validation refuses the block on an app whose `DBusMeta` cannot reach
 the notification service, since a policy over traffic that cannot happen is not a policy.
 
+**A guest's network.** A VM app declaring `NetworkLists` gets the same fail-closed egress a
+container does. qemu runs inside a network namespace made by `pasta --config-net`, which gives it
+working connectivity and uid 0 of a user namespace, so the ruleset loads with no privilege on the
+host. The ordering is the guarantee: nft loads, and only then does qemu exec, so a guest never
+exists on an unfiltered network - the same window `pod create` closes for a container.
+
+The rules come from `common/domain/nftrules`, shared so that what a `NetworkList` MEANS cannot
+differ between the two runtimes. Only self-scoped egress reaches a guest; sibling links, routing
+through a gateway, forwarding and by-name allowances are refused rather than half-applied, since
+a guest has no siblings and no pod to link to.
+
+The ruleset accepts NO loopback traffic, which is deliberate and was measured: pasta splices a
+namespace's loopback to the host's, so a rule accepting loopback-addressed egress hands the guest
+every service the person running it has bound to `127.0.0.1`. Scoping by address does not help,
+because the address genuinely is `127.0.0.1` at both ends. A guest needs none of it - it reaches
+the world through its emulated NIC, and qemu's control sockets are unix sockets.
+
+`ForwardPorts` is published by pasta rather than by qemu's `hostfwd`, which now binds inside the
+namespace where the host cannot reach it.
+
 ### 6.6 Dependency startup ordering
 
 `StartConditions.DependsOn` lists apps that must be up before this one. On launch the runner

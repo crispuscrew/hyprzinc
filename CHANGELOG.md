@@ -96,6 +96,19 @@ were silently ignored, and the audio directions were a claim rather than a contr
 
 ### Fixed
 
+- **A guest gets egress control.** A VM app had none: `-netdev user` was unconditional, so every
+  guest had unrestricted outbound plus whatever the host had on its loopback - which inverted the
+  advice in the known-issues table, where a VM is offered as the stronger boundary for an
+  untrusted GUI app. Declaring `NetworkLists` on a VM app now runs qemu inside a namespace with
+  an nftables ruleset loaded before it starts, so a guest never exists on an unfiltered network.
+
+  The rules come from a renderer in `common`, shared so a `NetworkList` cannot mean two things.
+  Only self-scoped egress reaches a guest; links, routing and by-name allowances are refused
+  rather than half-applied. Measured against a real namespace: the allowed destination is
+  reachable, a denied one is not, and a service on the host's loopback is not - that last one
+  needed the ruleset to accept no loopback at all, because pasta splices a namespace's loopback
+  to the host's and scoping by address does not help.
+
 - **Releases can be verified.** `make -f release.mk checksums` records the bytes of every shipped
   binary and `verify` rebuilds and checks them, which is only worth having because CI already
   proves the builds reproducible. `make -f release.mk tag` makes the tag a signed one, and
@@ -230,10 +243,6 @@ a pin covers the bytes of a file, and a file can point somewhere else.
 
 ### Still open
 
-- A VM app has no egress control: `-netdev user` is unconditional and `ForwardPorts` only adds
-  inbound entries, so every guest gets unrestricted outbound plus the host's loopback through
-  slirp's gateway. This belongs to `zvr`, not the schema. pasta is already a dependency and can
-  back a qemu netdev, which would give both runtimes one network model.
 - No VRAM limit exists, deliberately. The mechanism is the kernel's `dmem` cgroup controller
   (6.14+), which needs the DRM driver to register regions; on the development box the controller
   is present while `dmem.capacity` is empty. A field now would read as a cap and do nothing.
@@ -249,7 +258,6 @@ a pin covers the bytes of a file, and a file can point somewhere else.
   system, so editing a YAML changes what the attestation surface says about a running app.
 - A config run from a file path can claim an `AppNameID` that resolves to another app's address,
   forging that app's Wayland `app_id`, container name, bus row and `zcr net` posture.
-- Every guest reaches host services on 127.0.0.1 through user-mode networking's gateway.
 - The multiterminal launch enforces in a detached process with stdio discarded, so a failed
   ruleset load or a rejected security context is reported as a successful launch.
 

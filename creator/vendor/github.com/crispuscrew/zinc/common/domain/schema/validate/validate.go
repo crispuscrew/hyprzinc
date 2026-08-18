@@ -26,6 +26,7 @@ func Validate(cfg schema.AppConfig) error {
 	if cfg.Type == schema.ZincVirtualization {
 		checkVirtualization(cfg, add)
 		checkContainerOnlyFields(cfg, add)
+		checkVMNetwork(cfg, add)
 		return errors.Join(errs...)
 	}
 

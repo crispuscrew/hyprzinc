@@ -178,6 +178,30 @@ func checkCloudInit(cloudInit schema.CloudInit, add addFunc) {
 	}
 }
 
+// checkVMNetwork screens a guest's network lists.
+//
+// A guest gets the same fail-closed egress a container does: qemu runs inside a namespace with
+// the ruleset loaded before it starts. What does not reach a guest is the rest of the
+// vocabulary - a guest has no siblings to link to, no pod to route through, and publishes
+// through ForwardPorts rather than by listening on that namespace - so those shapes are refused
+// here rather than half-applied, which is how every tier of the container model was added too.
+func checkVMNetwork(cfg schema.AppConfig, add addFunc) {
+	for index, list := range cfg.NetworkMeta.NetworkLists {
+		switch {
+		case list.Ingress:
+			add("NetworkLists[%d]: a guest does not publish by listening in its own namespace - use VirtualizationMeta.ForwardPorts", index)
+		case list.Host:
+			add("NetworkLists[%d]: a host-scoped list is not supported for a guest", index)
+		case strings.TrimSpace(list.AppName) != "":
+			add("NetworkLists[%d]: a guest has no sibling apps to link to or route through", index)
+		case list.Via || list.Forward:
+			add("NetworkLists[%d]: routing through or for another app is a container tier and does not reach a guest", index)
+		case len(list.Domains) > 0:
+			add("NetworkLists[%d].Domains: allowing by name is resolved at launch by the container enforcer and is not wired for a guest yet; name the addresses", index)
+		}
+	}
+}
+
 // checkContainerOnlyFields rejects, on a VM app, the fields that only a container can
 // honour. Each names what it would take to support it, so the message reads as a
 // boundary rather than a mystery.
@@ -189,8 +213,6 @@ func checkContainerOnlyFields(cfg schema.AppConfig, add addFunc) {
 	}{
 		{len(cfg.Capabilities) > 0, "Capabilities",
 			"Linux capabilities are a container concept; a guest kernel has its own"},
-		{len(cfg.NetworkMeta.NetworkLists) > 0, "NetworkMeta.NetworkLists",
-			"the egress lock-down is nftables inside a container netns and does not reach a guest; use VirtualizationMeta.ForwardPorts"},
 		{len(cfg.Keys) > 0, "Keys",
 			"a VM has no host filesystem to mount keys into; use VirtualizationMeta.CloudInit.SSHKeyPath"},
 		{len(cfg.Volumes) > 0, "Volumes",

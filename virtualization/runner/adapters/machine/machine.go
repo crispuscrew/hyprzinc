@@ -46,7 +46,7 @@ type State struct {
 // Start launches a guest detached from the calling shell and confirms it survived. The
 // process is put in its own session so it outlives zvr - a launcher fires and forgets,
 // and the guest must not die with the hotkey that started it.
-func (runtime Runtime) Start(app string, args []string, extraEnv []string) error {
+func (runtime Runtime) Start(app string, args []string, extraEnv []string, stdin string) error {
 	if state, _ := runtime.State(app); state.Alive {
 		return fmt.Errorf("%s is already running (pid %d)", app, state.PID)
 	}
@@ -69,6 +69,12 @@ func (runtime Runtime) Start(app string, args []string, extraEnv []string) error
 	}
 	command.Stdout = logFile
 	command.Stderr = logFile
+	if stdin != "" {
+		// The nftables ruleset, when the guest runs inside a filtered namespace. On stdin
+		// rather than in a file: it is generated per launch, and a file would be one more
+		// thing that could change between being written and being read.
+		command.Stdin = strings.NewReader(stdin)
+	}
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", args[0], err)
