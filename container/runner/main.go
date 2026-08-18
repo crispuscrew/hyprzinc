@@ -24,6 +24,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -684,6 +685,32 @@ func loadLaunchable(svc app.Service, arg string) (schema.AppConfig, error) {
 	return cfg, nil
 }
 
+// refuseForgedIdentity refuses a file whose AppNameID belongs to an app in the store.
+//
+// AppNameID is not a label, it is the identity everything downstream reads: the container and pod
+// names, the Wayland app_id the compositor is told, the row `zcr bus` attributes a bus connection
+// to, and the app `zcr net` reports a posture for. A file anywhere on disk could claim
+// `AppNameID: firefox` and be run, and from the outside the result WAS firefox - same container
+// name, same app_id, same attribution row. Every surface Zinc offers to prove what an app is
+// would have agreed with it.
+//
+// The store's own file for that app is the exception: running it by path is running it by name.
+func refuseForgedIdentity(svc app.Service, arg string, cfg schema.AppConfig) error {
+	claimed := strings.TrimSpace(cfg.AppNameID)
+	if claimed == "" || !svc.Exists(claimed) {
+		return nil
+	}
+	stored, serr := filepath.Abs(svc.Path(claimed))
+	given, gerr := filepath.Abs(arg)
+	if serr == nil && gerr == nil && stored == given {
+		return nil // this IS that app's file
+	}
+	return fmt.Errorf("%s claims AppNameID %q, which is a different app in the store: that name is "+
+		"the container name, the Wayland app_id and the bus attribution row, so running this file would "+
+		"make it indistinguishable from %s. Rename it, or run the store's own app by name",
+		arg, claimed, claimed)
+}
+
 // refuseVM keeps inspect and logs off VM apps, which would otherwise fail with podman's "no such
 // object" - true, but silent about zvr owning the app. An unknown name is left alone: it may be a
 // raw container.
@@ -703,7 +730,14 @@ func load(svc app.Service, arg string) (schema.AppConfig, error) {
 	if strings.Contains(arg, "/") || strings.HasSuffix(arg, ".yaml") {
 		// A path names a file, and a file is one definition. Instances address the store,
 		// where a name can be run more than once.
-		return svc.LoadFileResolved(arg)
+		cfg, err := svc.LoadFileResolved(arg)
+		if err != nil {
+			return schema.AppConfig{}, err
+		}
+		if err := refuseForgedIdentity(svc, arg, cfg); err != nil {
+			return schema.AppConfig{}, err
+		}
+		return cfg, nil
 	}
 	addr, err := paths.ParseAddress(arg)
 	if err != nil {

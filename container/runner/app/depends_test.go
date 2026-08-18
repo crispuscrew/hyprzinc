@@ -73,6 +73,15 @@ func (engine *fakeRuntime) Logs(string, int) (string, error)  { return "", nil }
 // PIDs numbers the running set so the port is satisfied; the launch path never asks, and
 // what a pid MEANS is only decidable against a real runtime, so nothing here pretends
 // otherwise.
+// PodOf answers from the running set: a test app that is up is treated as being in its own pod,
+// which is what a filtered app looks like to the reporting path.
+func (engine *fakeRuntime) PodOf(name string) (string, error) {
+	if engine.running[name] {
+		return name + "-pod", nil
+	}
+	return "", nil
+}
+
 func (engine *fakeRuntime) PIDs() (map[string]int, error) {
 	pids := map[string]int{}
 	for name := range engine.running {

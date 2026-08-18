@@ -658,6 +658,19 @@ func (Runtime) Running() (map[string]bool, error) {
 	return set, nil
 }
 
+// PodOf reports the pod a container has joined, empty when it has none.
+//
+// Asked of the container rather than derived from the config, because that is the whole point:
+// what an app IS attached to is a fact about the running system, and a config file can be edited
+// after the launch that read it.
+func (Runtime) PodOf(name string) (string, error) {
+	out, err := exec.Command("podman", "inspect", "--format", "{{.Pod}}", name).Output()
+	if err != nil {
+		return "", fmt.Errorf("read the pod of %s: %w", name, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // PIDs returns the host PID of each running container's main process. A query failure is an error
 // here, unlike Running: "nothing running" and "I could not look" must not arrive as one answer when
 // the caller is about to attribute a bus connection to an app.

@@ -167,6 +167,24 @@ func printReport(report netReport) error {
 	return table.Flush()
 }
 
+// observedFiltered asks the running system what an app is attached to, rather than re-reading
+// what its config asked for.
+//
+// This is an attestation surface: `zcr net` is what a desktop reads to decide whether an app is
+// contained. Deriving it from the config meant editing a YAML changed what was reported about an
+// app that was already running - the file could say "no NetworkLists" while the app kept the
+// filtered netns its launch built. A pod is what the netns and its ruleset live in, so pod
+// membership is the observation that answers it.
+func observedFiltered(svc app.Service, runtime string) (bool, error) {
+	pod, err := svc.PodOf(runtime)
+	if err != nil {
+		// Unknown is not "isolated". Reporting a weaker posture than an app may actually have is
+		// the answer a reader would act on, so this refuses rather than guesses.
+		return false, fmt.Errorf("%s: could not read what it is attached to: %w", runtime, err)
+	}
+	return pod != "", nil
+}
+
 // netEntries lists the posture of every running app, sorted by address. It enumerates what is RUNNING
 // rather than what is defined, because a netns exists only while its pod does. Anything running that
 // is not a defined app is skipped: `podman ps` also holds Zinc's own proxies and whatever else the

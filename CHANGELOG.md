@@ -96,6 +96,20 @@ were silently ignored, and the audio directions were a claim rather than a contr
 
 ### Fixed
 
+- **`zcr net` reports what an app is attached to, not what its config asked for.** The posture
+  was derived from the file at report time, so editing a YAML changed what the attestation
+  surface said about an app that was already running - the file could say "no NetworkLists" while
+  the app kept the filtered netns its launch built. It reads pod membership from the runtime now,
+  which is where the netns and its ruleset live. A pod that cannot be read is an error rather
+  than a guess: reporting a weaker posture than an app may have is the answer a reader acts on.
+
+- **A config given by path can no longer claim another app's identity.** `AppNameID` is the
+  container and pod name, the Wayland `app_id` the compositor is told, the row `zcr bus`
+  attributes a connection to, and the app `zcr net` reports on - so a file anywhere on disk could
+  say `AppNameID: firefox`, be run, and be indistinguishable from firefox on every surface Zinc
+  offers to prove what an app is. A path-loaded file whose name belongs to a defined app is
+  refused; the store's own file is the exception, since running it by path is running it by name.
+
 - **What a launch builds is torn down when the app exits on its own.** Nothing did it: the
   reaping goroutine meant to cover it cannot run, since every front-end launches through a `zcr`
   that exits moments later, and a clean exit was never covered by it at all. A detached

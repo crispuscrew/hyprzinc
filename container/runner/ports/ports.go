@@ -71,6 +71,11 @@ type Runtime interface {
 	IsRunning(name string) bool
 	Do(args []string) error            // user-facing passthrough (stop/restart/inspect/logs) with host stdio
 	Running() (map[string]bool, error) // names the runtime reports as running (list view)
+	// PodOf is the pod a running container has joined, or "" when it has none. It is how the
+	// posture reported for an app becomes an observation rather than a re-reading of its config:
+	// a filtered app joins the pod that carries its netns and its ruleset, and an isolated one
+	// runs with no network at all and joins nothing. Editing a YAML cannot change this answer.
+	PodOf(name string) (string, error)
 	// PIDs is the host PID of each running container's main process. Rootless podman does not remap
 	// pids, so these are the numbers other host tools report - which is what lets bus attribution turn
 	// a GetConnectionUnixProcessID answer back into a container Zinc named.

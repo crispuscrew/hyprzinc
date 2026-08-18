@@ -282,6 +282,10 @@ func (svc Service) runAll(steps []ports.Command) error {
 	return errors.Join(errs...)
 }
 
+// PodOf reports the pod a running app has joined, which is what its network posture is read
+// from: a filtered app is in one, an isolated app is in none.
+func (svc Service) PodOf(name string) (string, error) { return svc.runtime.PodOf(name) }
+
 // NetCounters returns the enforcer's own output and whether the app has a ruleset at all. Left
 // unparsed: what it means belongs to the enforcement mechanism, not the app layer (section 13).
 func (svc Service) NetCounters(cfg schema.AppConfig, opt options.HostOptions) (string, bool, error) {

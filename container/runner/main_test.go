@@ -252,3 +252,43 @@ func TestParseRunArgs(t *testing.T) {
 		t.Fatal("a malformed volume spec should bubble up as an error")
 	}
 }
+
+// AppNameID is the identity every attestation surface reads: the container and pod names, the
+// Wayland app_id, the row `zcr bus` attributes a connection to, the app `zcr net` reports on. A
+// file anywhere on disk could claim another app's name and be run, and from the outside the
+// result was that app.
+func TestPathLoadedConfigCannotClaimAnotherAppsIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	quiet(t)
+
+	apps := filepath.Join(home, "zinc", "apps")
+	if err := os.MkdirAll(apps, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "SchemaVersion: 3\nType: ZincContainer\nAppNameID: victim\nImageMeta:\n  Image: docker.io/library/alpine" + digestPin + "\n"
+	stored := filepath.Join(apps, "victim.yaml")
+	if err := os.WriteFile(stored, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same definition from somewhere else is a forgery, whatever it otherwise contains.
+	err := run([]string{"validate", writeApp(t, body)})
+	if err == nil {
+		t.Fatal("a file claiming a defined app's AppNameID should be refused")
+	}
+	if !strings.Contains(err.Error(), "victim") {
+		t.Errorf("the refusal should name what is being impersonated, got: %v", err)
+	}
+
+	// The store's own file, given by path, is not a forgery: that is the same app.
+	if err := run([]string{"validate", stored}); err != nil {
+		t.Fatalf("the store's own file should still load by path, got: %v", err)
+	}
+
+	// A name nothing in the store claims is nobody's identity to steal.
+	free := strings.Replace(body, "AppNameID: victim", "AppNameID: unclaimed", 1)
+	if err := run([]string{"validate", writeApp(t, free)}); err != nil {
+		t.Fatalf("a file claiming an undefined name should load, got: %v", err)
+	}
+}
