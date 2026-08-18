@@ -7,6 +7,40 @@ tracked in [RELEASES.md](RELEASES.md).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-18
+
+Schema v3, and the release where every field in the schema is enforced by something. Three
+blocks were declared and did nothing: `NotificationMeta` was refused outright, anonymous volumes
+were silently ignored, and the audio directions were a claim rather than a control.
+
+### Added
+
+- **Audio directions are enforced, through PipeWire.** An app asking for session audio gets a
+  socket of its own under a PipeWire security context, which stamps an identity it cannot forge
+  (engine, app-id, instance-id) the way the Wayland work did in 0.9.
+
+  The context alone restricts nothing - wireplumber grants a restricted client `rx` on any
+  object, which is enough to open a microphone - so the holder also connects to the manager
+  socket and sets the app's permissions itself, taking every capture node to nothing when no
+  microphone was granted, and re-applying when the graph changes. Measured against pipewire
+  1.4.11: an app seeing three capture nodes before enforcement sees none after. Pure Go, no cgo.
+
+  `Monitor` is the one direction this cannot reach, structurally: a sink's `.monitor` is a set
+  of ports on the sink an app plays to, not an object of its own, so denying it would deny
+  playback. Validation says exactly that instead of the blanket caveat it carried.
+
+- **`NotificationMeta` is enforced.** A filter stands between the app and its D-Bus proxy and
+  rewrites the one call that carries a notification. `Disabled` is answered with `AccessDenied`
+  so the app is told; `Silenced` with a plausible id so it cannot tell; the prefix, actions,
+  anchor markup and expire timeout are rewritten on the way past. Only `Notify` calls are
+  decoded - everything else is forwarded as the bytes it arrived as, descriptors included, so
+  the portal traffic on the same connection is untouched.
+
+- **Anonymous and size-limited volumes are mounted.** A `Volume` with no host path was skipped
+  entirely, so `SizeLimited` and `SizeLimitMiB` were validated and did nothing. It is a tmpfs at
+  `InnerMount` now, always `nosuid,nodev`, with `SizeLimitMiB` as `tmpfs-size`: a ceiling the
+  kernel holds rather than a number in a file.
+
 ### Changed
 
 - **Schema v3: `Configs` is its own type and is finally mounted.** It was declared as
@@ -48,6 +82,19 @@ tracked in [RELEASES.md](RELEASES.md).
   **Migration.** `SchemaVersion` becomes 3. `Pipewire: true` becomes `Playback: default`, plus
   `Microphone: default` if the app records. `LegacyALSA: true` granted all of `/dev/snd` and has
   no direct equivalent: name the nodes. Unknown keys are rejected, so a v2 config fails loudly.
+
+
+- **The GPU default is documented honestly.** `/dev/dri` is granted unless a config sets
+  `DisplayMeta.DisableGpuAccess`; the architecture doc said twice that it was off by default.
+  The code was always the authority. Opt-out stays, since almost every graphical app needs the
+  GPU: it is the one grant whose zero value is permissive.
+
+- **`flake.lock` is committed.** The flake pinned nixpkgs by commit but shipped no lock, so
+  nothing recorded what was actually built. CI builds with `--no-update-lock-file`.
+
+- **The virtio-win driver ISO no longer claims to be verified.** The check confirmed two files
+  began with `MZ`, which is a corruption check, and the ISO comes from a floating path with no
+  digest. The output now says which of the two it did and prints the digest to pin.
 
 ### Security
 
@@ -139,20 +186,6 @@ a pin covers the bytes of a file, and a file can point somewhere else.
 
 - **`safeName` in the creator refused a legal app name.** It tested `..` as a substring, so
   `my..app` could be created and never deleted again. It compares path segments now.
-
-### Changed
-
-- **The GPU default is documented honestly.** `/dev/dri` is granted unless a config sets
-  `DisplayMeta.DisableGpuAccess`; the architecture doc said twice that it was off by default.
-  The code was always the authority. Opt-out stays, since almost every graphical app needs the
-  GPU: it is the one grant whose zero value is permissive.
-
-- **`flake.lock` is committed.** The flake pinned nixpkgs by commit but shipped no lock, so
-  nothing recorded what was actually built. CI builds with `--no-update-lock-file`.
-
-- **The virtio-win driver ISO no longer claims to be verified.** The check confirmed two files
-  began with `MZ`, which is a corruption check, and the ISO comes from a floating path with no
-  digest. The output now says which of the two it did and prints the digest to pin.
 
 ### Still open
 

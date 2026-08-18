@@ -15,7 +15,7 @@
 | 0.8.2   | Instances      | `zcr run --instance`, `{state}` mount templating, `zcr recheck` pin staleness, `zc init` |
 | 0.9.0   | Attestable sandbox | real `wp_security_context_v1` per instance, bus attribution (`zcr bus`), nftables counters and posture (`zcr net`) |
 | 0.9.1   | Audit fixes    | 22 defects from an audit: shell injection from a wg-quick file into the NET_ADMIN helper, a relaunch that tore down the running app, an additive nft load, an unfiltered tunnel input chain |
-| 0.10.0  | schema v3      | audio per direction, Configs mounted, Env, ReadOnlyRootfs, RequireSecurityContext |
+| 0.10.0  | schema v3, and every field enforced | audio per direction (PipeWire security context + permissions), Configs mounted, anonymous volumes, notification filtering, Env, ReadOnlyRootfs, RequireSecurityContext |
 | ...     |                |                       |
 
 **0.10.0 is a minor bump, not a patch.** It changes the app-config schema, so every existing
