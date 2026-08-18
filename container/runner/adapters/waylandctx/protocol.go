@@ -230,7 +230,6 @@ func dial(path string) (*client, error) {
 
 func (cli *client) Close() error { return cli.conn.Close() }
 
-// newID allocates the next client-side object id.
 func (cli *client) newID() uint32 {
 	id := cli.nextID
 	cli.nextID++

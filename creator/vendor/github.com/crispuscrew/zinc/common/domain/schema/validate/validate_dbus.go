@@ -60,10 +60,9 @@ func checkBusName(field string, index int, name string, allowWildcard bool, add 
 	case !busNameRE.MatchString(base):
 		add("DBusMeta.%s[%d]: %q is not a well-known bus name - two or more dot-separated elements of [A-Za-z0-9_-], no element starting with a digit", field, index, name)
 	case wildcard && strings.Count(base, ".") < 2:
-		// A wildcard grants the whole subtree, including services that appear there later. With a two-element
-		// base that is an entire vendor namespace: "org.freedesktop.*" covers systemd1, whose
-		// StartTransientUnit runs an arbitrary command as the user OUTSIDE the container, plus the keyring
-		// and every portal. So a wildcard must name something more specific than a vendor prefix.
+		// Three elements, because a two-element base is a whole vendor namespace:
+		// "org.freedesktop.*" covers systemd1, whose StartTransientUnit runs an arbitrary command
+		// outside the container.
 		add("DBusMeta.%s[%d]: %q grants an entire vendor namespace - a wildcard must name at least three elements before the '*' (org.freedesktop.portal.*, not org.freedesktop.*), because the subtree includes services that appear under it later and org.freedesktop.systemd1 alone is a way out of the sandbox", field, index, name)
 	}
 }
@@ -129,9 +128,8 @@ func checkSourceTag(tag string, add addFunc) {
 	case trimmed != tag || hasUnsafe(tag):
 		add("ImageMeta.SourceTag: %q must not contain whitespace or control characters", tag)
 	case strings.Contains(tag, "@sha256:"):
-		// Deliberately looser than digestRE, which is anchored so an IMAGE reference cannot
-		// begin with something podman would read as a flag. Here the question is only
-		// "does this record a digest", so any occurrence counts.
+		// Deliberately looser than digestRE, which is anchored so an IMAGE reference cannot begin with
+		// something podman would read as a flag. This value never reaches an argv slot like that.
 		add("ImageMeta.SourceTag: %q is a digest, not a tag - re-resolving it would return itself and report the pin as never stale; record the tag it came from, or leave this empty", tag)
 	}
 }

@@ -54,7 +54,6 @@ func checkVirtualization(cfg schema.AppConfig, add addFunc) {
 			virt.Firmware, schema.VMFirmwareBIOS, schema.VMFirmwareUEFI, schema.VMFirmwareBIOS)
 	}
 	if virt.SecureBoot && virt.Firmware != schema.VMFirmwareUEFI {
-		// Secure Boot is a UEFI mechanism; there is nothing for it to attach to on BIOS.
 		add("VirtualizationMeta.SecureBoot: requires Firmware %s", schema.VMFirmwareUEFI)
 	}
 
@@ -93,12 +92,8 @@ func checkBaseImage(image, digest string, add addFunc) {
 	case hasUnsafe(image):
 		add("ImageMeta.Image %q: must be a single-line path (no whitespace or control characters)", image)
 	case strings.ContainsRune(image, ','):
-		// Same reason as InstallMedia below: a comma is qemu's -drive property separator, so
-		// it appends options rather than staying inside the path.
 		add("ImageMeta.Image %q: must not contain ',' - it separates qemu's -drive properties, so a comma appends options to the drive rather than staying in the path", image)
 	case !filepath.IsAbs(image):
-		// Resolved by whichever process happens to run zvr otherwise: a relative base would
-		// mean a different disk depending on the working directory a hotkey inherited.
 		add("ImageMeta.Image %q: must be an absolute path for a VM app (a relative base resolves differently depending on where the launcher was started)", image)
 	case hasDotDot(image):
 		add("ImageMeta.Image %q: must not contain a '..' segment", image)
@@ -136,9 +131,6 @@ func checkInstallMedia(index int, media string, add addFunc) {
 	case hasUnsafe(media):
 		add("VirtualizationMeta.InstallMedia[%d] %q: must be a single-line path (no whitespace or control characters)", index, media)
 	case strings.ContainsRune(media, ','):
-		// A comma separates qemu's -drive properties, so it does not stay inside the path: qemu resolves a
-		// duplicate key to the LAST one, so a second file= in the tail replaces the absolute path just
-		// approved, and qemu will happily open a URL. `zvr install` boots from this medium.
 		add("VirtualizationMeta.InstallMedia[%d] %q: must not contain ',' - it separates qemu's -drive properties, so a comma appends options to the drive rather than staying in the path", index, media)
 	case !filepath.IsAbs(media):
 		add("VirtualizationMeta.InstallMedia[%d] %q: must be an absolute path", index, media)
@@ -155,8 +147,6 @@ func checkForward(index int, forward schema.PortForward, add addFunc) {
 		add("VirtualizationMeta.ForwardPorts[%d].GuestPort %d: must be 1-65535", index, forward.GuestPort)
 	}
 	if forward.HostPort > 0 && forward.HostPort < 1024 {
-		// Rootless qemu cannot bind a privileged port, so this would fail at launch with a
-		// bind error that says nothing about the config that caused it.
 		add("VirtualizationMeta.ForwardPorts[%d].HostPort %d: must be >= 1024 (zvr runs rootless and cannot bind a privileged port)", index, forward.HostPort)
 	}
 }
@@ -182,8 +172,8 @@ func checkCloudInit(cloudInit schema.CloudInit, add addFunc) {
 		add("VirtualizationMeta.CloudInit.SSHKeyPath %q: must be an absolute path", path)
 	case strings.HasSuffix(path, ".pub"):
 	default:
-		// Not fatal-by-content (we cannot read the file here, this is pure), but a path that
-		// is not a .pub is overwhelmingly a private key, and the seed ISO is guest-readable.
+		// Not fatal-by-content: this package is pure and cannot read the file. A path that is not a
+		// .pub is overwhelmingly a private key.
 		add("VirtualizationMeta.CloudInit.SSHKeyPath %q: must be a PUBLIC key (a .pub path) - the seed ISO is readable by the guest, so a private key placed here would be handed to it", path)
 	}
 }

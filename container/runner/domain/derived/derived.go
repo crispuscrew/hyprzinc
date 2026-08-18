@@ -58,7 +58,6 @@ func BuildFingerprint(cfg schema.AppConfig) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// installSteps trims each install step and drops the blanks.
 func installSteps(install []string) []string {
 	var steps []string
 	for _, line := range install {
@@ -98,7 +97,6 @@ func InstallHint(image string) string {
 	}
 }
 
-// containsAny reports whether str contains any of subs.
 func containsAny(str string, subs ...string) bool {
 	for _, sub := range subs {
 		if strings.Contains(str, sub) {

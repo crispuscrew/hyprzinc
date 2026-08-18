@@ -21,7 +21,6 @@ var reservedEnv = map[string]string{
 	"DBUS_SESSION_BUS_ADDRESS": "the runner sets this to the filtered bus socket (DBusMeta)",
 }
 
-// checkEnv screens the app environment.
 func checkEnv(env map[string]string, add addFunc) {
 	names := make([]string, 0, len(env))
 	for name := range env {
@@ -36,9 +35,8 @@ func checkEnv(env map[string]string, add addFunc) {
 			add("Env[%q]: cannot be set here - %s, and overriding it points the app at something that is not there", name, reservedEnv[name])
 		}
 		if hasControl(env[name]) {
-			// hasControl already covers a newline, which is the case that matters: the value
-			// becomes one -e argument, and a config whose environment spans lines is not one
-			// anybody can review.
+			// hasControl covers the case that matters: the value becomes one -e argument, so a newline
+			// would split it.
 			add("Env[%q]: the value must be a single line with no control characters", name)
 		}
 	}

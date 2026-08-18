@@ -238,7 +238,6 @@ func splitList(value string) []string {
 	return out
 }
 
-// stripComment drops a trailing `#` comment.
 func stripComment(line string) string {
 	if index := strings.Index(line, "#"); index >= 0 {
 		return line[:index]

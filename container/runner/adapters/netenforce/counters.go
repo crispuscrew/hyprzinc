@@ -115,7 +115,6 @@ func ParseCounters(raw []byte) ([]RuleCounter, error) {
 	return counters, nil
 }
 
-// counterStats is what a counter statement carries.
 type counterStats struct {
 	Packets uint64 `json:"packets"`
 	Bytes   uint64 `json:"bytes"`

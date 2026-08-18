@@ -124,7 +124,6 @@ func Run(items []Item, activate ActivateFunc, opts Options) (int, error) {
 		boxW, boxH := render.ThumbBox(application.cellW, application.cellH)
 		application.thumbs = thumbs.New(boxW, boxH)
 	}
-	// Fade the overlay in unless the caller disabled it, in which case it starts fully shown.
 	if !opts.NoAnim {
 		application.fade = 0
 		application.animating = true

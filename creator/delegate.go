@@ -36,7 +36,6 @@ func delegate(svc backend.Service, cmd string, argv []string) error {
 	return delegateVM(cmd, name, argv)
 }
 
-// delegateVM translates a command into zvr's vocabulary.
 func delegateVM(cmd, name string, argv []string) error {
 	switch cmd {
 	case "run":
@@ -75,7 +74,6 @@ func loadForDelegate(svc backend.Service, name string) (schema.AppConfig, error)
 	return svc.LoadResolved(name)
 }
 
-// firstPositional returns the first non-flag argument.
 func firstPositional(argv []string) string {
 	for _, arg := range argv {
 		if !strings.HasPrefix(arg, "-") {

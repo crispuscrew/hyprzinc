@@ -126,7 +126,6 @@ func run(argv []string) error {
 		return runner.Passthrough(argv...)
 	}
 
-	// Authoring commands work on the store locally; no runtime needed.
 	sto, err := store.Default()
 	if err != nil {
 		return err

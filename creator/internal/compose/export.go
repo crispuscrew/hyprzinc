@@ -48,10 +48,8 @@ func FromApp(cfg schema.AppConfig) (Project, []string, error) {
 	if probe := cfg.StartConditions.ReadyCheck; len(probe) > 0 {
 		service.Healthcheck = &Healthcheck{Test: append(StringList{"CMD"}, probe...)}
 		if seconds := cfg.StartConditions.ReadyTimeoutSec; seconds > 0 {
-			// Deliberately NOT written to healthcheck.timeout. That field bounds how long ONE
-			// probe may run; ReadyTimeoutSec bounds how long a DEPENDENT waits for the app to
-			// become ready. Putting one in the other's place would export a different promise
-			// under the same number.
+			// Deliberately NOT healthcheck.timeout, which bounds how long ONE probe may run;
+			// ReadyTimeoutSec bounds how long a DEPENDENT waits.
 			note("StartConditions.ReadyTimeoutSec (%ds) is not represented: it bounds how long a dependent waits for this app, and compose's healthcheck.timeout bounds a single probe's run - different things, so it was not written as one.", seconds)
 		}
 	}
@@ -80,9 +78,6 @@ func FromApp(cfg schema.AppConfig) (Project, []string, error) {
 	if cfg.HostTheme {
 		note("HostTheme is not represented: the theme bundle is assembled by the runner at launch and mounted read-only from a path only it knows.")
 	}
-	// Unconditional, because the desktop wiring is not a field an app opts into: the runner
-	// mounts whatever the session it is launched from actually has. A file written on this
-	// machine could not name those paths for another one even if it tried.
 	note("Desktop wiring (the Wayland socket, PipeWire, /dev/dri) is not represented: the runner resolves it at launch from the session it is started in, so it is not knowable when this file is written.")
 	if cfg.StartConditions.Multiterminal {
 		note("StartConditions.Multiterminal is not represented: the shared holder container and its per-terminal `exec` are a runner behaviour, not a compose one.")
@@ -94,17 +89,14 @@ func FromApp(cfg schema.AppConfig) (Project, []string, error) {
 		note("Configs are not represented: they are mounted from the app's own bundle directory (apps/<app>/configs), which compose has no equivalent for. The described container starts without them.")
 	}
 	if cfg.ResourcesMeta.MaxSwapMiB > 0 {
-		// compose takes one memory figure; podman's --memory-swap is a TOTAL. Writing the sum
-		// into `memory` would export a larger RAM cap than the app has.
 		note("ResourcesMeta.MaxSwapMiB (%d MiB) is not represented: compose states one memory limit, and the swap allowance sits on top of it rather than inside it.", cfg.ResourcesMeta.MaxSwapMiB)
 	}
 	if cfg.InternalUserMeta.KeepUserID {
 		note("InternalUserMeta.KeepUserID is not represented: mapping the host uid into the container is `podman --userns=keep-id`, which compose has no field for.")
 	}
 	if !cfg.DBusMeta.IsZero() {
-		// The direction of the loss matters: an importer gets an app with no bus grants, which is Zinc's
-		// fail-closed default. The unsafe reading is the opposite one - that exporting a narrowed sandbox
-		// produced a file carrying that decision. It does not, so it is said plainly.
+		// The direction of the loss is what makes this safe: an importer gets no bus grants, which is
+		// the fail-closed default.
 		note("DBusMeta (%d Talk, %d Own) is not represented: the filtered bus is a socket served by a proxy container the runner starts, and compose has no way to state either the proxy or the grants. An app imported from this file gets NO session bus, not these names.",
 			len(cfg.DBusMeta.Talk), len(cfg.DBusMeta.Own))
 	}
@@ -112,7 +104,6 @@ func FromApp(cfg schema.AppConfig) (Project, []string, error) {
 		note("The terminal and stop-condition settings (Terminal, KeepAlive, Background) are not represented: they decide how the runner launches and reaps the app, which is not something a compose file states.")
 	}
 	if len(cfg.NetworkMeta.DNSServers) > 0 {
-		// It is written out as `dns:`, but only half of what it means survives.
 		note("NetworkMeta.DNSServers is written as `dns:`, but only as a setting: in Zinc it is also a RESTRICTION - the ruleset drops DNS to anything else - and compose cannot say that half.")
 	}
 
@@ -151,8 +142,6 @@ func volumeMounts(cfg schema.AppConfig, note func(string, ...any)) StringList {
 	var mounts StringList
 	for index, volume := range cfg.Volumes {
 		if !volume.HostMounted || strings.TrimSpace(volume.HostMount) == "" {
-			// An anonymous or size-limited volume has no host path to write into a compose
-			// mount, and inventing one would name a location nobody chose.
 			note("Volumes[%d] (%s) is not represented: it is not a host bind mount, and compose's short mount syntax has nothing to point at.", index, volume.InnerMount)
 			continue
 		}

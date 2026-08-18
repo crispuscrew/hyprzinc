@@ -19,10 +19,6 @@ func checkAudio(cfg schema.AppConfig, add addFunc) {
 	checkAudioDevice("Microphone", cfg.AudioMeta.Microphone, add)
 	checkAudioDevice("Monitor", cfg.AudioMeta.Monitor, add)
 	if len(cfg.AudioMeta.Monitor.Devices) > 0 {
-		// The device-list form is the strong one everywhere else, and here it is meaningless.
-		// A monitor source is a tap on PipeWire's mix; the card knows nothing about it, so
-		// there is no /dev/snd node that could grant or deny it. Accepting a list would let a
-		// config look like it had narrowed this to one device when it had done nothing.
 		add("AudioMeta.Monitor: a device list means nothing here - a .monitor source is part of PipeWire's graph, not a card, so no /dev/snd node carries one; write none or default")
 	}
 }
@@ -46,8 +42,8 @@ func alsaDirection(device string) (capture bool, known bool) {
 
 func checkAudioDevice(field string, dev schema.AudioDevice, add addFunc) {
 	if dev.Default && len(dev.Devices) > 0 {
-		// Unreachable through YAML, where the two forms are a scalar and a list, but a
-		// config built in code could set both and they mean different things.
+		// Unreachable through YAML, where the two forms are a scalar and a list, but a config built in
+		// code could set both.
 		add("AudioMeta.%s: cannot be both %q and a device list - pick the session default or exact nodes", field, "default")
 		return
 	}

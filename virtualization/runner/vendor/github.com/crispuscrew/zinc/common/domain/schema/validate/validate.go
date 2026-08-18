@@ -175,10 +175,8 @@ func checkContainerImage(image string, add addFunc) {
 	case strings.TrimSpace(image) == "":
 		add("ImageMeta.Image: must not be empty")
 	case hasUnsafe(image):
-		// Interpolated into a FROM line - must be a single-line ref (section 5.5).
 		add("ImageMeta.Image %q: must be a single-line reference (no whitespace or control characters)", image)
 	case !LocalImage(image) && !digestRE.MatchString(image):
-		// section 5.5: third-party images pinned by canonical digest; only localhost/ may use a mutable tag.
 		add("ImageMeta.Image %q: third-party images must be digest-pinned (...@sha256:<64 hex>); only localhost/ images may use a mutable tag (section 5.5)", image)
 	}
 }
@@ -190,11 +188,9 @@ func checkLifecycle(cfg schema.AppConfig, add addFunc) {
 	case start.Multiterminal && !start.Terminal:
 		add("StartConditions.Multiterminal: requires Terminal (it spawns terminals into a shared container)")
 	case start.Terminal && cfg.StopConditions.Background && !start.Multiterminal:
-		// A foreground terminal app can't also be Background; Multiterminal lifts this.
 		add("StartConditions.Terminal: a terminal app runs in a foreground window; it cannot also be StopConditions.Background (use Multiterminal to keep the shared container alive after the last terminal closes)")
 	}
 	if start.Multiterminal && strings.TrimSpace(start.Entrypoint) == "" && strings.TrimSpace(start.MultiterminalEntrypoint) == "" {
-		// Each terminal re-execs the app, so it needs an explicit command (PID 1 is a holder).
 		add("StartConditions: Multiterminal needs an explicit Entrypoint or MultiterminalEntrypoint (the image default cannot be replayed into each terminal)")
 	}
 }

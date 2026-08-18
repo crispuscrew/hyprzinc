@@ -103,7 +103,6 @@ func run(argv []string) error {
 	}
 }
 
-// service wires the store and the path layout.
 func service() (app.Service, error) {
 	store, err := fs.Default()
 	if err != nil {

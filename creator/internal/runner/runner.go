@@ -30,7 +30,6 @@ type Result struct {
 // find locates the zcr binary, returning an actionable error if it is not installed.
 func find() (string, error) { return findBinary(Binary) }
 
-// findBinary locates one of the runtimes by name.
 func findBinary(name string) (string, error) {
 	path, err := exec.LookPath(name)
 	if err != nil {

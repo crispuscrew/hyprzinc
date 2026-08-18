@@ -81,9 +81,6 @@ func checkConfig(index int, configFile schema.ConfigFile, add addFunc) {
 	case hasDotDot(source):
 		add("Configs[%d].BundlePath %q: must not escape the bundle (no '..' segments)", index, source)
 	case strings.Contains(source, "{"):
-		// The placeholders name runtime state, and a bundle path names authored content. The
-		// two were wired together before v3 and could not both hold: expansion produced an
-		// absolute state path, which this same function then rejected for being absolute.
 		add("Configs[%d].BundlePath %q: placeholders are for runtime paths (Volumes), not for a bundle file, which ships with the app", index, source)
 	}
 }
@@ -104,13 +101,9 @@ func checkKeys(keys []schema.Key, add addFunc) {
 		case hasUnsafe(keyEntry.Path) || strings.ContainsAny(keyEntry.Path, ":,"):
 			add("Keys[%d].Path %q: must not contain ':', ',', or whitespace (it shifts podman's -v fields)", index, keyEntry.Path)
 		case !strings.HasPrefix(keyEntry.Path, "/"):
-			// A Key promises a narrow thing: this one file, read-only, inside the container
-			// home. "~" is the shell's, not podman's, so it is taken literally.
 			add("Keys[%d].Path %q: must be an absolute path ('~' is not expanded, and a relative path resolves against wherever zcr was started)", index, keyEntry.Path)
 		case hasDotDot(keyEntry.Path):
-			// The mount destination is filepath.Join(home, dir, filepath.Base(Path)), and
-			// Base("/..") is "/", so a trailing ".." collapses the destination onto the
-			// container home itself: "Path: /.." mounts the entire host filesystem over it.
+			// The destination is filepath.Join(home, dir, filepath.Base(Path)), and Base("/..") is "/".
 			add("Keys[%d].Path %q: must not contain '..' segments - the destination is derived from the path's last element, so '..' mounts the source over the container home instead of into it", index, keyEntry.Path)
 		default:
 			// A Key is a host bind mount like any other, so it gets the same host-path policy. Without this it was

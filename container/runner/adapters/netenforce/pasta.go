@@ -18,7 +18,6 @@ import (
 	"github.com/crispuscrew/zinc/container/runner/ports"
 )
 
-// Compile-time check that the enforcer satisfies ports.NetEnforcer.
 var _ ports.NetEnforcer = Enforcer{}
 
 // DefaultNetfilterImage is the local helper carrying nft, run once per filtered launch to lock the

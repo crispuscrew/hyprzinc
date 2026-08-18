@@ -71,15 +71,12 @@ func checkTunnel(cfg schema.AppConfig, add addFunc) {
 	path := strings.TrimSpace(tunnel.WireGuardConf)
 	switch {
 	case !strings.HasPrefix(path, "/"):
-		// Resolved by the runner, which runs from wherever it was invoked - a relative path
-		// would name a different file depending on the caller's directory.
+		// Resolved by the runner, which runs from wherever it was invoked.
 		add("NetworkMeta.Tunnel.WireGuardConf %q: must be an absolute path", path)
 	case hasUnsafe(path):
 		add("NetworkMeta.Tunnel.WireGuardConf %q: must be a single-line path (no whitespace or control characters)", path)
 	}
 	if len(cfg.NetworkMeta.NetworkLists) == 0 {
-		// An app with no lists gets --network none: no namespace to build an interface in,
-		// and nothing for the tunnel to carry.
 		add("NetworkMeta.Tunnel: needs at least one NetworkList - an app with none runs with no network at all, so there is nothing to build a tunnel in")
 	}
 }
@@ -127,19 +124,10 @@ func checkDomains(index int, netList schema.NetworkList, add addFunc) {
 	}
 	switch {
 	case netList.Ingress:
-		// An ingress list's addresses are the peers allowed to connect IN. Those arrive as
-		// packets from an address; there is no name in them to match, and resolving the
-		// domain would allow whoever holds that address rather than whoever owns the name.
 		add("NetworkLists[%d].Domains: only an egress list can allow by name - an ingress list matches the source address of an incoming packet, which carries no name", index)
 	case netList.Blacklist:
-		// A domain allowlist is the set of addresses a name resolves to. A domain BLACKLIST
-		// would have to be every address it does not, which is unknowable - and the rule
-		// would read as "this app cannot reach evil.com" while blocking only the addresses
-		// evil.com happened to hold at launch.
 		add("NetworkLists[%d].Domains: cannot be used on a blacklist - blocking a name would mean blocking every address it is not resolved to, and the rule would read as a ban while stopping only today's addresses", index)
 	case strings.TrimSpace(netList.AppName) != "":
-		// A sibling link is gated by interface, not by address, so an address set on it
-		// would be enforced by nothing at all.
 		add("NetworkLists[%d].Domains: has no meaning on a sibling link - a link is gated by its interface and its published ports, not by destination address", index)
 	case netList.Host:
 		add("NetworkLists[%d].Domains: has no meaning on a host-scoped list", index)
@@ -236,12 +224,11 @@ func checkGateway(index int, netList schema.NetworkList, self bool, add addFunc)
 		}
 	}
 	if self {
-		// Own netns has no next-hop to route through - a gateway needs host/sibling.
 		add("NetworkLists[%d]: a gateway needs a host or sibling AppName link, not the app's own netns", index)
 	}
 
-	// Multi-homing (extra interface + ip-rule/ip-route policy routing) isn't
-	// implemented yet; the fields are schema-legal but a config using them is rejected.
+	// Multi-homing (extra interface plus ip-rule policy routing) is not implemented; the fields are
+	// schema-legal, so this is the gate.
 	add("NetworkLists[%d]: routing through a gateway (multi-homing) is not supported in this build yet", index)
 }
 

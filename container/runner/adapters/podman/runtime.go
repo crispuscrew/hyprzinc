@@ -299,7 +299,6 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		args = append(args, "-v", key.Path+":"+filepath.Join(home, dir, filepath.Base(key.Path))+":ro")
 	}
 
-	// Extra capabilities (section 3 Capabilities).
 	for _, capability := range cfg.Capabilities {
 		args = append(args, "--cap-add", capability)
 	}

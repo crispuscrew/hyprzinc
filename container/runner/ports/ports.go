@@ -10,14 +10,10 @@ import (
 	"github.com/crispuscrew/zinc/container/runner/domain/paths"
 )
 
-// Command is one runtime instruction - the args passed to the container runtime,
-// with optional stdin (used to pipe the nft ruleset into the lock-down step) and a
-// short human label for dry-run output. It is the neutral unit a NetEnforcer emits
-// and a Runtime executes, so neither side hardcodes the other's CLI.
 type Command struct {
 	Args  []string // arguments to the runtime (e.g. podman)
-	Stdin string   // optional stdin
-	Desc  string   // short human label (shown in dry-run)
+	Stdin string
+	Desc  string // short human label (shown in dry-run)
 }
 
 // Result is one image-registry search hit.
@@ -85,7 +81,7 @@ type Runtime interface {
 // ImageBuilder builds an app's derived image (FROM ImageMeta.Image + the install
 // layer). Adapter: adapters/podman.
 type ImageBuilder interface {
-	Build(cfg schema.AppConfig) error       // force a build
+	Build(cfg schema.AppConfig) error
 	Fingerprint(ref string) (string, error) // read the build label; error if the image is absent
 }
 

@@ -67,10 +67,6 @@ func serviceToApp(name string, project Project) App {
 			strings.Join(argv, " "), head)
 	}
 	if len(service.Entrypoint) == 0 && len(service.Command) > 0 {
-		// compose's `command` replaces the image's CMD and leaves its ENTRYPOINT in place;
-		// Zinc has one field and it becomes podman's --entrypoint, which replaces the
-		// ENTRYPOINT instead. On the images where that matters most - postgres, redis, mysql -
-		// the entrypoint script is what creates the data directory and drops privileges.
 		note("command %q became the Entrypoint. In compose, `command` replaces the image's CMD and its ENTRYPOINT still runs; here it replaces the ENTRYPOINT. If this image has a setup entrypoint (postgres, redis, mysql and friends all do), it will no longer run.",
 			strings.Join(service.Command, " "))
 	}
@@ -257,8 +253,6 @@ func resources(service Service, note func(string, ...any)) schema.ResourcesMeta 
 		if cores, err := strconv.ParseFloat(limits.CPUs, 64); err == nil && cores > 0 {
 			res.MaxCPUCores = cores
 		} else {
-			// Silence here would be the worst kind: a cap the compose file set, quietly
-			// becoming no cap at all, on the tool whose job is to bound what an app takes.
 			note("deploy.resources.limits.cpus %q could not be read, so this app imports with NO cpu limit. Set ResourcesMeta.MaxCPUCores by hand.", limits.CPUs)
 		}
 	}
@@ -323,15 +317,11 @@ func importCapabilities(service Service, note func(string, ...any)) []string {
 			note("cap_add: ALL was dropped: Zinc's baseline is cap-drop ALL, and re-adding every capability would undo the containment this tool is for. Name the capabilities the app actually needs.")
 			continue
 		case "NET_ADMIN", "SYS_ADMIN":
-			// These two are refused rather than noted: NET_ADMIN lets an app flush the egress ruleset in its own
-			// netns and SYS_ADMIN contains it. The validator refuses them on a filtered app, and an imported app
-			// has no NetworkLists by default, so without this they would sail through.
+			// Refused rather than noted: the validator only refuses these on a FILTERED app, and an
+			// imported app has no NetworkLists, so without this they would sail through.
 			note("cap_add: %s was dropped: it would let the app remove its own network lock-down, so it is never granted by an import. Add it by hand if this app genuinely needs it and you accept what it means.", upper)
 			continue
 		}
-		// Every other capability is carried, and said out loud: a capability re-added on top
-		// of cap-drop ALL is a deliberate widening, and it should not arrive silently just
-		// because someone else's file asked for it.
 		note("cap_add: %s was carried over - it is granted on top of Zinc's cap-drop ALL baseline. Drop it if the app does not need it.", upper)
 		caps = append(caps, upper)
 	}
@@ -364,10 +354,6 @@ func importVolumes(service Service, note func(string, ...any)) []schema.Volume {
 			continue
 		}
 		if !strings.HasPrefix(host, "/") {
-			// `./data` is relative to the COMPOSE FILE, and `~` is the shell's. Zinc stores an
-			// absolute host path and the runner hands it to podman from wherever it happens to
-			// be running, so keeping either verbatim mounts a different directory than the file
-			// meant - silently, and podman creates the missing one rather than failing.
 			note("volume %q was dropped: %q is relative to the compose file (or to a shell's home), and Zinc mounts absolute host paths. Re-add it with the full path.", mount, host)
 			continue
 		}

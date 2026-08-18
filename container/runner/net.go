@@ -85,7 +85,6 @@ func netList(svc app.Service, asJSON bool) error {
 	return printEntries(entries)
 }
 
-// printEntries renders the enumeration for a person.
 func printEntries(entries []netEntry) error {
 	if len(entries) == 0 {
 		return nil // same as `zcr ps`: nothing running is not an error and not a message
@@ -112,7 +111,6 @@ func printEntries(entries []netEntry) error {
 	return nil
 }
 
-// netCounters prints what one app's ruleset has seen.
 func netCounters(svc app.Service, opt options.HostOptions, name string, asJSON bool) error {
 	cfg, err := loadApp(svc, name)
 	if err != nil {
@@ -149,7 +147,6 @@ func netCounters(svc app.Service, opt options.HostOptions, name string, asJSON b
 	return printReport(report)
 }
 
-// printReport renders one app's readout for a person.
 func printReport(report netReport) error {
 	fmt.Printf("address: %s\n", report.Address)
 	fmt.Printf("posture: %s\n", report.Posture)

@@ -22,8 +22,7 @@ const (
 	// startGrace is how long to watch a freshly started guest before declaring it up. A
 	// bad command line kills qemu in milliseconds, so this is long enough to catch that
 	// without making a good launch feel slow.
-	startGrace = 2 * time.Second
-	// pollInterval paces the waits below.
+	startGrace   = 2 * time.Second
 	pollInterval = 50 * time.Millisecond
 	// termGrace is how long a guest gets after SIGTERM before SIGKILL. qemu closes its
 	// disks on SIGTERM, so this is about letting it finish that, not about the guest.

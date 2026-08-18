@@ -200,10 +200,8 @@ func cmdRun(svc app.Service, opt options.HostOptions, argv []string) error {
 	// config first, so these get the same checkVolume guards as configured Volumes.
 	cfg.Volumes = append(cfg.Volumes, runtimeVolumes...)
 	if execute {
-		// Launch through the service: validate -> build derived image -> lock down -> detach.
 		return svc.Launch(cfg, opt)
 	}
-	// Dry-run: validate and print the exact podman command(s) without running them.
 	if verr := validate.Validate(cfg); verr != nil {
 		return fmt.Errorf("invalid config %s:\n%w", name, verr)
 	}
