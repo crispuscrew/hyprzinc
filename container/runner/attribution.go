@@ -1,36 +1,19 @@
 package main
 
-// Bus attribution: turning something observed on the HOST session bus back into the Zinc app
-// and instance it belongs to, plus the reporting half of `zcr where`.
+// Bus attribution: turning a connection on the HOST session bus back into the Zinc app and instance
+// it belongs to, plus the reporting half of `zcr where`.
 //
-// The desktop's first proposal was for each app to own a bus name like
-// zinc.app.<app>.<instance>. That is not available, and the reason is worth keeping: the
-// proxy is a relay with no bus identity of its own, so `--own=zinc.app.x` grants THE APP
-// permission to claim that name. The app then has to volunteer to claim it - a self-asserted
-// identity, which is the exact thing attribution exists to stop trusting.
+// A bus name per app is not available: the proxy is a relay with no bus identity, so `--own` would
+// grant THE APP the name and the app would have to claim it - a self-asserted identity, which is
+// what attribution exists to stop trusting. Zinc publishes the mapping it holds by construction
+// instead, having created and named the proxy itself.
 //
-// What Zinc can publish instead is the mapping it already holds by construction. Zinc creates
-// the proxy container, names it after the app, and gives it the only handle on the real bus
-// the app will ever be behind. Nothing here asks the app anything.
+// The chain: connection -> pid (the bus reads SO_PEERCRED, solid), pid -> proxy container (live
+// runtime list, solid when read, best-effort across pid reuse), proxy -> app@instance (the name
+// Zinc gave it).
 //
-// The chain the consumer walks, and how solid each link is:
-//
-//  1. connection -> pid. The host bus answers GetConnectionUnixProcessID with a host pid it
-//     took from SO_PEERCRED when the connection was made. The kernel's answer about the peer,
-//     not the peer's claim about itself. Solid.
-//  2. pid -> proxy container. `zcr bus` reads the runtime's live list. Solid at the instant it
-//     is read, and best-effort across time: the bus captured its pid at connect time, and a
-//     proxy that has since died and had its pid reused would be attributed to whoever holds
-//     the number now. Narrow, because the bus drops the connection when the proxy exits, and
-//     unavoidable without a bus that hands out something better than a pid.
-//  3. proxy container -> app@instance. The name Zinc gave it, read back. Solid, except that
-//     recovering the instance from a runtime name needs the store to disambiguate a dotted app
-//     name (see paths.ParseRuntime).
-//
-// Measured, and worth knowing before reading an empty answer as "this app has no bus":
-// xdg-dbus-proxy opens ONE upstream connection PER CLIENT. An app with no live bus client
-// therefore contributes no connection to the host bus at all, and an app with several
-// contributes several unique names, all carrying the proxy's one pid. Many-to-one is normal.
+// Measured: xdg-dbus-proxy opens ONE upstream connection PER CLIENT, so an app with no live bus
+// client contributes nothing and one with several contributes several names on one pid.
 
 import (
 	"encoding/json"
@@ -122,12 +105,8 @@ func renderWhere(report whereReport) string {
 		report.State, report.Container, socket, proxy)
 }
 
-// busRows turns the runtime's live container pids into the attribution table: one row per
-// running D-Bus proxy. pids is every running container by name; defined answers whether a
-// name is a defined app, which is what recovers "app@instance" from a runtime name.
-//
-// Sorted by address so two calls in a row produce the same bytes - a consumer diffing the
-// table, or a test asserting it, would otherwise be at the mercy of map iteration order.
+// busRows builds the attribution table, one row per running proxy. Sorted by address, so two calls
+// produce the same bytes.
 func busRows(pids map[string]int, runtimeDir string, defined func(string) bool) []busRow {
 	rows := []busRow{} // never nil: the JSON form of "nothing running" must be [], not null
 	for container, pid := range pids {
@@ -190,21 +169,9 @@ func splitJSONFlag(argv []string) (rest []string, asJSON bool, err error) {
 	return rest, asJSON, nil
 }
 
-// cmdWhere answers "where does this instance keep things, what is it called at runtime, and
-// where is its bus".
-//
-// It exists so nothing outside Zinc has to hardcode the layout. A desktop that wants to show
-// a user where an app's state lives, or that names a container to look it up, would otherwise
-// mirror the rules in paths - and two copies of a layout drift the first time either side
-// changes. Asking costs a process; assuming costs a bug nobody sees until the paths differ.
-//
-// Deliberately not folded into `inspect`, which is a passthrough to `podman inspect`:
-// intercepting it would put Zinc in the business of parsing and re-emitting podman's output
-// forever, and the answer here is about an instance whether or not it is running.
-//
-// The app has to be defined, because the bus answer comes from its config: a guess at whether
-// an unknown name has a bus would be a path that may not exist, reported with the same
-// confidence as one that does.
+// cmdWhere reports an instance's paths, runtime name and bus, so nothing outside Zinc has to
+// hardcode the layout. Not folded into `inspect`, which is a passthrough to podman, and this answer
+// holds whether or not the app is running. The app must be defined: the bus answer is config.
 func cmdWhere(svc app.Service, opt options.HostOptions, argv []string) error {
 	rest, asJSON, err := splitJSONFlag(argv)
 	if err != nil {
@@ -246,18 +213,10 @@ func cmdWhere(svc app.Service, opt options.HostOptions, argv []string) error {
 
 const whereUsage = "usage: zcr where <app[@instance]> [--json]"
 
-// cmdBus prints the attribution table: every running D-Bus proxy, the host pid that identifies
-// it, and the app@instance it belongs to.
-//
-// This is the reverse direction of `where`, and it is the one the desktop actually needs: it
-// observes a connection on the host bus and has no name to look up, only a pid it got from
-// GetConnectionUnixProcessID. Resolving that pid needs the whole table, not one app's entry.
-//
-// It stops at the pid on purpose. Asking the bus which unique names map to that pid is one
-// call the consumer is already positioned to make (it is holding a bus connection; that is how
-// it saw the thing in the first place), and doing it here would put a D-Bus client - a
-// protocol implementation, an auth handshake, a dependency - inside the sandbox runtime for no
-// isolation gain.
+// cmdBus prints the attribution table - the direction the desktop needs, since it observes a
+// connection and holds only a pid. It stops at the pid on purpose: mapping pid to unique names is
+// one call the consumer is already positioned to make, and doing it here would put a D-Bus client
+// inside the sandbox runtime.
 func cmdBus(svc app.Service, opt options.HostOptions, argv []string) error {
 	rest, asJSON, err := splitJSONFlag(argv)
 	if err != nil {

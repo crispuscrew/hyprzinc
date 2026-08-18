@@ -9,328 +9,176 @@ tracked in [RELEASES.md](RELEASES.md).
 
 ### Changed
 
-- **Schema v3: `Configs` has its own type, and is finally mounted.** It was declared as
-  `[]Volume`, the same struct as `Volumes`, and the sharing was the problem. Three of that
-  struct's six fields could never apply to a single authored file: `HostMounted` was
-  documented as ignored, `SizeLimited` and `SizeLimitMiB` were validated and meaningless. The
-  one field the two lists did share carried opposite rules, since a `Volume.HostMount` must be
-  an absolute host path while a `Config`'s had to be relative and was rejected if absolute. One
-  field name, one type, two contradictory meanings depending on which list an entry sat in.
+- **Schema v3: `Configs` is its own type and is finally mounted.** It was declared as
+  `[]Volume`, where three of six fields could not apply to a single file and `HostMount`
+  carried the opposite rule, and it produced no mount at all. Now `[]ConfigFile` with
+  `BundlePath` (relative to the app's bundle), `InnerMount` and `Writable` (read-only by
+  default). Mounted from `$XDG_CONFIG_HOME/zinc/apps/<app>/configs/`, per app rather than per
+  instance. Placeholders in a `BundlePath` are refused rather than expanded.
 
-  And none of it did anything. A `Configs` entry validated, had `{state}` expanded into it,
-  was counted in `zc`'s form, was described by the compose exporter and was refused for VM
-  apps, and then produced no mount at all: the app started without its file and nothing said
-  why. Meanwhile `NotificationMeta`, also unimplemented, is refused outright on the stated
-  principle that a deferred field must not look configured. `Configs` was the one place that
-  rule was not applied.
-
-  It is now `[]ConfigFile` with three fields that all mean something: `BundlePath` (relative
-  to the app's bundle), `InnerMount`, and `Writable` (read-only by default, so what a reviewer
-  read is what the app runs with). The mount is wired, sourced from
-  `$XDG_CONFIG_HOME/zinc/apps/<app>/configs/`, which is the path validation messages had been
-  naming all along while no code resolved it. Per app rather than per instance: authored
-  content is shared by every instance, and per-instance content is state.
-
-  Placeholders are refused in a `BundlePath` rather than expanded. They named runtime paths,
-  so expansion produced an absolute path that this same config's validator then rejected for
-  being absolute, meaning a placeholder in a `Config` could never have worked.
-
-
-- **Schema v3: `Env` and `ReadOnlyRootfs`.** There was no way to give an app an environment
-  variable at all: `ImageMeta.Install` becomes a `RUN` layer rather than an `ENV`, so an app
-  needing `LANG` or `TZ` simply could not be configured. `Env` is a mapping rather than a list
-  of `KEY=VALUE` strings, so a duplicate key cannot be written, and it is emitted in sorted
-  order because a Go map has none and this argv is what `--dry-run` prints and what the
-  reproducible-build check compares. `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` and
-  `DBUS_SESSION_BUS_ADDRESS` are refused there: they describe what the runner actually built,
-  so overriding one cannot make the new value true, only send the app somewhere there is
-  nothing. The runner's own exports are emitted last, so podman's last-wins keeps them.
-
-  `ReadOnlyRootfs` maps to podman's `--read-only`. `--read-only-tmpfs` defaults true, so
-  `/dev`, `/dev/shm`, `/run`, `/tmp` and `/var/tmp` stay writable and an app needing scratch
-  space still runs; what stops is writing into the image at runtime. Both are refused for VM
-  apps, whose guest takes its environment from its own init and mounts its own root.
+- **Schema v3: `Env` and `ReadOnlyRootfs`.** There was no way to set an environment variable
+  at all, since `Install` becomes a `RUN` layer rather than an `ENV`. `Env` is a mapping, so a
+  duplicate key cannot be written, and it is emitted sorted because `--dry-run` output must be
+  stable. `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` are refused: they
+  describe what the runner built. `ReadOnlyRootfs` maps to `--read-only`, with the tmpfs
+  mounts left writable. Both are refused for VM apps.
 
 - **Schema v3: `DisplayMeta.RequireSecurityContext`.** A compositor without
-  `wp_security_context_v1` gets handed the raw socket, and the container is labelled
-  `zinc.wayland=passthrough` to record that the app is a client the compositor cannot tell
-  apart from an unsandboxed one. That fallback is deliberate, since most compositors still
-  lack the protocol, but nothing could ask for the strict answer. Now a config can: the launch
-  is refused instead, naming the compositor as the reason. For an app that is sandboxed
-  precisely because it is untrusted, running it unlabelled is worse than not running it.
-
-  The decision is made where the config is known rather than in the detached holder process,
-  so nothing about the holder's status protocol changed. Setting it together with
-  `DisableSecurityContext` is refused rather than resolved, since they are opposites, and it is
-  refused for a VM app, whose guest draws into a qemu window and never speaks the host's
-  compositor protocol.
+  `wp_security_context_v1` gets handed the raw socket, labelled `zinc.wayland=passthrough`.
+  Nothing could ask for the strict answer; now a config can, and the launch is refused instead.
+  Setting it with `DisableSecurityContext` is refused, as is setting it on a VM app.
 
 - **Schema v3: `AudioMeta.Monitor`, the third audio capability.** A PipeWire sink carries a
-  `.monitor` source, a readable tap on everything mixed into it, so a client on the session
-  socket can record what OTHER apps are playing. That is a distinct capability from a
-  microphone and a more unusual one: it crosses the boundary between two sandboxed apps rather
-  than between an app and a host device, since a music player and a video call share a sink.
+  `.monitor` source, so a client on the socket can record what OTHER apps are playing - a
+  capability that crosses the boundary between two sandboxed apps. Takes `none` or `default`
+  only, since no `/dev/snd` node carries a monitor source. Like `Microphone: none`, `none` is
+  not yet enforced for a container and validation says so.
 
-  It takes only `none` or `default`. A device list is refused, because a monitor source is part
-  of PipeWire's graph and no `/dev/snd` node carries one, so a list would read as a narrowing
-  while doing nothing. It is refused for a VM app as well, whose guest sees an emulated sound
-  card rather than the host graph.
+- **Schema v3: audio is granted one direction at a time.** `Pipewire` and `LegacyALSA` are
+  replaced by `Playback` and `Microphone`, each taking `none`, `default`, or a list of
+  `/dev/snd` nodes. `Pipewire: true` mounted the session socket, which grants capture and the
+  monitor sources along with playback, so every app that wanted to make a sound could listen to
+  the room; on the VM side `hda-duplex` was attached unconditionally.
 
-  Like `Microphone: none`, `Monitor: none` is not yet enforced for a container, and validation
-  says so. The field still earns its place before enforcement exists: an app that really does
-  record the desktop can now declare it, and one that claims it does not is told plainly that
-  the claim is not being kept. It is a capability on the recorder, never a protection on the
-  recorded: nothing in a music player's config can keep another app off its sink.
+  The three forms are enforced differently, which is why they are spelled differently: a device
+  list is passed with `--device` and enforced by the kernel; `default` on a VM is enforced by
+  qemu (`hda-output` has no capture stream); `default` on a container is **not** enforced yet,
+  and `zc` warns on exactly that case. Closing it means speaking PipeWire's security context.
 
-- **Schema v3: audio is granted one direction at a time.** `AudioMeta.Pipewire` and
-  `AudioMeta.LegacyALSA` are replaced by `Playback` and `Microphone`, each taking one of
-  three forms: `none` (also what an absent field means), `default`, or a list of `/dev/snd`
-  device nodes.
-
-  The old flag could not express the difference. `Pipewire: true` mounted the session socket,
-  and PipeWire grants a client on that socket capture as well as playback, plus the monitor
-  sources that record what other applications are playing. So every app that wanted to make a
-  sound was also granted the ability to listen to the room, and no config could say otherwise.
-  On the VM side it was worse in a way that needed no PipeWire at all: `hda-duplex` was
-  attached unconditionally, so every audio-enabled guest had a microphone it never asked for.
-
-  The three forms are spelled differently because they are enforced differently, and the
-  schema should not hide that:
-
-  - A device list is passed with `--device` and the kernel enforces it. An app granted one
-    microphone cannot open a second card. This is the strong form.
-  - `default` on a VM is enforced by qemu: the guest gets an `hda-output` codec with no
-    capture stream unless a microphone was granted. There is no endpoint to open.
-  - `default` on a container is **not** enforced yet. It mounts the PipeWire socket, which
-    grants both directions whatever the config asked for. `zc` warns on exactly this case
-    rather than letting the field read like a control it is not. Closing it means Zinc
-    speaking PipeWire's security context the way it already speaks Wayland's.
-
-  The field also writes its denials out: a config that does not want sound records
-  `Playback: none` rather than omitting the key, so a reviewer sees that the grant was
-  considered and refused. That is the same reason the schema has always written an explicit
-  `false` for other denials.
-
-  **Migration.** `SchemaVersion` becomes 3 and every config needs the version line bumped;
-  `Pipewire: true` becomes `Playback: default`, plus `Microphone: default` if the app records.
-  `LegacyALSA: true` granted all of `/dev/snd`, every card in both directions, and has no
-  direct equivalent: name the nodes the app needs. Decoding rejects unknown keys, so a config
-  left at v2 fails loudly with the offending field named rather than losing a grant silently.
-
-
-A second audit, aimed at the places 0.9.1 did not reach: the VM disk chain, the paths that
-load a config without validating it, and the tools around the runner. Two findings share a
-root cause worth stating plainly, because it is the same mistake in two subsystems: a pin
-covers the bytes of a file, and a file can point somewhere else.
+  **Migration.** `SchemaVersion` becomes 3. `Pipewire: true` becomes `Playback: default`, plus
+  `Microphone: default` if the app records. `LegacyALSA: true` granted all of `/dev/snd` and has
+  no direct equivalent: name the nodes. Unknown keys are rejected, so a v2 config fails loudly.
 
 ### Security
 
-- **A pinned VM base image could hand the guest any file the user can read, or a URL.** A
-  qcow2 header carries a `backing_file` pointer, and those bytes are inside the digest, so a
-  hostile image pins perfectly and forever while the guest boots whatever the pointer
-  resolves to. `qemu-img convert` on the resulting overlay returns the host file's plaintext
-  at offset 0; with the nbd or curl block drivers present, which is the norm, the pointer can
-  be a URL, making the boot disk remote, mutable and unauthenticated. That is verbatim the
-  property `BaseDigest` exists to rule out.
+A second audit, aimed at where 0.9.1 did not reach: the VM disk chain, the paths that load a
+config without validating it, and the tools around the runner. Two findings share a root cause:
+a pin covers the bytes of a file, and a file can point somewhere else.
 
-  The fix is the definitional one rather than an attempt to follow the chain: an image that
-  declares a backing file or an external data file is not self-contained, cannot be pinned,
-  and is refused with instructions to flatten it. Raw images have no such header and are
-  unaffected. Checked before the digest is consulted, so it also applies on the cached path.
+- **A pinned VM base image could hand the guest any file the user can read, or a URL.** A qcow2
+  `backing_file` pointer is inside the digest, so a hostile image pins perfectly while the guest
+  boots whatever it resolves to; with the nbd or curl drivers present it can be a URL. An image
+  declaring a backing or external data file is now refused as not self-contained, checked before
+  the digest so it also applies on the cached path.
 
-- **`zcr stop` and `zcr restart` on a config given by path never validated it.** A store app
-  has its name checked against its filename; the path form takes whatever the file claims.
-  `AppNameID` is not a label, it is a container name, a pod name and a path segment inside an
-  `rm -rf`, so `AppNameID: --all` turned the teardown's `podman rm -f --ignore <app>` into
-  `podman rm -f --ignore --all`, removing every container on the host, and `../..` walked
-  that `rm -rf` out of the app's own socket directory and into the session's runtime
-  directory, taking the Wayland sockets, the session bus socket and podman's rootless state.
-  This is the container-side twin of the `zvr reset` path traversal fixed in 0.9.1.
+- **`zcr stop` and `zcr restart` on a config given by path never validated it.** `AppNameID: --all`
+  turned the teardown's `podman rm -f --ignore <app>` into `--ignore --all`, and `../..` walked
+  its `rm -rf` out into the session runtime directory. Every verb that loads a config now
+  validates the name there, and the socket-directory helper refuses a path outside its own root.
 
-  Every verb that loads a config goes through one function, so it validates there. The
-  socket-directory helper also refuses to return a path outside its own root, since the
-  consumer is an `rm -rf` with the runtime directory bind-mounted read-write.
+- **A WireGuard `Endpoint` could carry shell metacharacters into the privileged helper.** The
+  hand-rolled address test accepted any colon-bearing string without a slash or space, so
+  `[::$(cmd)::]:51820` reached the tunnel script the helper runs with `CAP_NET_ADMIN` before the
+  ruleset closes the namespace. It goes through `net.ParseIP` now, like its siblings.
 
-- **A WireGuard `Endpoint` could carry shell metacharacters into the privileged helper.**
-  `Address` and `AllowedIPs` were fixed in 0.9.1 by parsing them; `Endpoint` kept a
-  hand-rolled "looks like an address" test that accepted any colon-bearing string without a
-  slash or a space, so `[::$(cmd)::]:51820` parsed as an IPv6 address and was interpolated
-  unquoted into the tunnel script the netfilter helper runs with `CAP_NET_ADMIN` before the
-  nft ruleset closes the namespace. It now goes through `net.ParseIP`, like its siblings.
+- **`Talk: ["org.freedesktop.*"]` was accepted, unwarned.** That subtree contains
+  `org.freedesktop.systemd1`, whose `StartTransientUnit` runs an arbitrary command outside the
+  container. A wildcard must now name at least three elements before the `*`. `zc` additionally
+  warns on a grant naming a service whose purpose is to run code.
 
-  Exploitation was probably blocked downstream by `wg setconf` rejecting the same string
-  first. That is an accident of a tool's behaviour, not a check, and the boundary is here.
+- **A config could mount the raw session bus and the raw compositor socket.** A volume naming
+  `/run/user/1000` handed the app both while `DBusMeta` stayed empty and every Zinc surface
+  agreed with it. Sources under the runtime directory, `/proc` and `/sys` are refused.
 
-- **`Talk: ["org.freedesktop.*"]` was accepted, unwarned.** A wildcard grants its whole
-  subtree, including services that appear there later, and that subtree contains
-  `org.freedesktop.systemd1`, whose `StartTransientUnit` runs an arbitrary command as the
-  user outside the container. One tidy-looking line and the sandbox is gone. A wildcard must
-  now name at least three elements before the `*`, so a vendor namespace cannot be granted
-  whole. Deeper wildcards are unaffected. `zc` additionally warns when a grant names a
-  service whose advertised purpose is to run code, or claims a name the desktop's own
-  service normally owns.
+- **`zvr install` validated nothing.** `--media` and `--disk` went straight into `-drive`, where
+  a second `file=` in the tail replaces the path. Both are screened now, and `--firmware`,
+  `--devices` and `--secure-boot` are checked against their enums rather than silently
+  reinterpreted as BIOS-with-virtio.
 
-- **A config could mount the raw session bus and the raw compositor socket.** Mount
-  validation screened for field-shifting characters and had no host-path policy at all, so a
-  volume naming `/run/user/1000` handed the app both unfiltered, while `DBusMeta` stayed
-  empty and every Zinc surface agreed with it: `zcr where` said `bus: none`, `zcr bus` showed
-  no row, and the container still carried the `zinc.wayland=security-context` label for a
-  context it was ignoring. The grant was invisible in exactly the place a reviewer looks.
-  Mount sources under the runtime directory, `/proc` and `/sys` are refused, and the app is
-  told to ask for the capability instead.
+- **An unverified UEFI variable store could decide what Secure Boot enforced.** The store beside
+  a base image is adopted on first run and nothing pinned it, so `SecureBoot: true` ran the
+  secure-boot firmware over an attacker-chosen PK/KEK/db. No attacker needed either: install
+  without `--secure-boot`, author with `SecureBoot: true`, and the guest boots in setup mode.
+  Adoption is refused when `SecureBoot` is set.
 
-- **`zvr install` validated nothing.** The comma-injection class fixed in 0.9.1 for configs
-  was still open on the one path that boots from the medium: `--media` and `--disk` went
-  straight into `-drive`, where a second `file=` in the tail replaces the path, and the
-  basename also lands in the QMP and serial socket options. Both are now screened, and
-  `--firmware`, `--devices` and `--secure-boot` are checked against their enums instead of
-  being silently reinterpreted as BIOS-with-virtio.
+- **Host mount and key paths must be absolute.** Podman resolves a relative source against its
+  own working directory and reads a separator-less source as a named volume it creates. A `Keys`
+  path additionally could not contain `..`, since `Path: /..` mounted the host filesystem over
+  the container home.
 
-- **An unverified UEFI variable store could decide what Secure Boot enforced.** The store
-  beside a base image is adopted on first run, which is what carries a Windows install's boot
-  entry across, and nothing pinned it. With `SecureBoot: true` the app got the secure-boot
-  firmware over an attacker-chosen PK/KEK/db. The benign version needed no attacker at all:
-  install without `--secure-boot`, author the app with `SecureBoot: true`, and the guest
-  boots in setup mode while the config says otherwise. Adoption is now refused when
-  `SecureBoot` is set, and the build-shape check runs on the seeding path too.
+- **`ImageMeta.Image` only had to end in something digest-shaped**, so
+  `-v/:/host@sha256:<64 hex>` validated as pinned and reached podman in a bare positional slot.
+  Anchored at both ends now.
 
-- **Host mount and key paths must be absolute.** Podman resolves a relative source against
-  its own working directory, which is wherever `zcr` was started, and reads a source with no
-  separator as a named volume it creates. Either way the config named one thing and mounted
-  another. A `Keys` path additionally could not contain `..`: the destination is built from
-  the path's last element, so `Path: /..` mounted the host filesystem over the container home.
+- **`ZINC_NETFILTER_IMAGE` was passed through unchecked**, holding the most privileged image
+  Zinc runs to a weaker standard than an app's own. It must be a `localhost/` reference or a
+  digest pin, and the default is fully qualified.
 
-- **`ImageMeta.Image` only had to end in something digest-shaped.** The pattern was anchored
-  at the tail, so `-v/:/host@sha256:<64 hex>` validated as a pinned image and reached podman
-  in the one argv slot that is a bare positional. It is anchored at both ends now.
+- **`zvr stop` could signal an unrelated process.** The swtpm check matched "swtpm" anywhere in
+  a recycled pid's command line. It compares argv elements now.
 
-- **`ZINC_NETFILTER_IMAGE` was passed through unchecked**, which made the most privileged
-  image Zinc runs the one reference held to a weaker standard than an app's own image. It
-  must now be a `localhost/` reference or a digest pin. The default is also fully qualified
-  as `localhost/zinc/netfilter:local`, so it satisfies the rule the validator applies to
-  everything else.
-
-- **`zvr stop` could signal an unrelated process.** The swtpm check matched "swtpm" anywhere
-  in a recycled pid's command line, which an editor, a grep or a build log satisfies. It
-  compares argv elements now, which is the rule its own comment already claimed and which the
-  supervisor adopted in 0.9.1.
-
-- **`make virgl-venus` built from a mutable tag.** The venus-capable virglrenderer that guest
-  Vulkan needs was cloned by tag and built by running upstream's own scripts on the host, and
-  the result is a library qemu loads with its seccomp sandbox already disabled for Vulkan.
-  `zvr` printed the raw clone-and-build sequence as the fix when the library was missing, so
-  it was a command users were told to run. The commit is pinned and checked, and the hint now
-  points at the make target rather than reproducing the unpinned form.
+- **`make virgl-venus` built from a mutable tag**, and `zvr` printed the raw clone-and-build
+  sequence as the fix. The commit is pinned and checked, and the hint points at the make target.
 
 ### Fixed
 
-- **`Autorestart` produced an argv podman refuses.** `--rm` and `--restart` conflict, and
-  podman rejects the pair at the CLI layer, so nothing was created. The launch was detached
-  with no stdio and `zcr` had already exited, so it reported success while the app never
-  started and the pod, ruleset, proxy and display holder were all left behind. A compose file
-  with `restart: always` imports straight to this.
+- **`Autorestart` produced an argv podman refuses.** `--rm` and `--restart` conflict at the CLI
+  layer, and the launch is detached with no stdio, so `zcr` reported success while the app never
+  started and the pod, ruleset, proxy and holder were left behind. `restart: always` in a compose
+  file imports straight to this.
 
 - **The Wayland holder never let go of a container that runs without `--rm`.** It waited for
-  the container to be removed, which for a `KeepAlive` or `Autorestart` app never happens, so
-  it span every 250ms for the rest of the session and the security context was never revoked.
-  It now asks whether the container is running again, with a restart window, rather than
-  whether it still exists.
+  removal, which never happens for a `KeepAlive` or `Autorestart` app, so it span every 250ms for
+  the session and the context was never revoked. It asks whether the container is running again,
+  with a restart window.
 
-- **`zc tui` acted on the name a config claimed rather than the file it came from.** A row
-  that fails to resolve is still listed so it can be repaired, and it carried an unchecked
-  `AppNameID`. A dropped `notes.yaml` saying `AppNameID: firefox` therefore made delete
-  remove the real, reviewed `firefox.yaml` while reporting success and leaving the hostile
-  file in place; run, stop and logs were aimed the same way. Every action uses the store key
-  now, and the list displays it.
+- **`zc tui` acted on the name a config claimed rather than the file it came from.** A dropped
+  `notes.yaml` saying `AppNameID: firefox` made delete remove the real `firefox.yaml` while
+  reporting success. Every action uses the store key now, and the list displays it.
 
-- **`zc` had none of the exec-boundary guards the launcher has.** The launcher filters its
-  list to the schema's name charset and refuses a flag-shaped or `.yaml`-suffixed name before
-  running it, with tests for each; `zc` drives the same runner from the same kind of list and
-  had neither, so a dropped `--net=host.yaml` became a runnable row and `notes.yaml.yaml`
-  listed as `notes.yaml`, which `zcr` re-reads as a path relative to wherever `zc` was
-  started. Both guards now exist on both sides.
+- **`zc` had none of the exec-boundary guards the launcher has**, so a dropped `--net=host.yaml`
+  became a runnable row and `notes.yaml.yaml` listed as `notes.yaml`, which `zcr` re-reads as a
+  relative path. Both guards now exist on both sides.
 
-- **The app list could be rewritten by a config.** Fields are painted unescaped and the
-  renderer splits on newlines, so an embedded newline in `ImageMeta.Image` added a fabricated
-  row and a cursor-movement escape repainted the row above, letting one app's line describe
-  another. Validation would reject both, but validation runs at save and at launch, never on
-  the display path, so a file that is never runnable could still rewrite what a reviewer
-  reads. Control characters are stripped and the fields are bounded.
+- **The app list could be rewritten by a config.** Fields are painted unescaped, so a newline in
+  `ImageMeta.Image` added a fabricated row and a cursor escape repainted the row above.
+  Validation never runs on the display path. Control characters are stripped and fields bounded.
 
-- **The bus socket directory was 0700 only at its leaf.** `mkdir -m 700 -p a/b/c` leaves the
-  parents at the image's umask, so the claim that the directory is 0700 was true of one level.
+- **The bus socket directory was 0700 only at its leaf**, since `mkdir -m 700 -p` leaves the
+  parents at the umask.
 
-- **`safeName` in the creator refused a legal app name.** It tested for `..` as a substring,
-  so `my..app` (which the validator accepts) could be created and then never deleted, edited
-  or validated again. It compares path segments now, matching the launcher's version.
+- **`safeName` in the creator refused a legal app name.** It tested `..` as a substring, so
+  `my..app` could be created and never deleted again. It compares path segments now.
 
 ### Changed
 
 - **The GPU default is documented honestly.** `/dev/dri` is granted unless a config sets
-  `DisplayMeta.DisableGpuAccess`, and the architecture doc said twice that GPU access was off
-  by default. The code was always the authority; the text was wrong. Opt-out is deliberate,
-  since almost every graphical app needs the GPU, and it stays that way: no field is renamed
-  and no config changes. What the doc now records is that this is the one grant in the schema
-  whose zero value is permissive, and therefore the one that does not appear in a config when
-  it applies.
+  `DisplayMeta.DisableGpuAccess`; the architecture doc said twice that it was off by default.
+  The code was always the authority. Opt-out stays, since almost every graphical app needs the
+  GPU: it is the one grant whose zero value is permissive.
 
 - **`flake.lock` is committed.** The flake pinned nixpkgs by commit but shipped no lock, so
-  the second build path had no recorded `narHash` and nothing in the repo said what was
-  actually built. CI now builds with `--no-update-lock-file`, which turns a disagreement
-  between `flake.nix` and the lock into a failure instead of a silent re-resolve.
+  nothing recorded what was actually built. CI builds with `--no-update-lock-file`.
 
-- **The virtio-win driver ISO no longer claims to be verified.** The check extracted two
-  files and confirmed they began with `MZ`, which is a corruption check, and then printed
-  "verified". The ISO comes from a floating "stable-virtio" path with no digest, so the
-  output now says which of the two it did, and prints the observed digest with the line to
-  add to pin it.
+- **The virtio-win driver ISO no longer claims to be verified.** The check confirmed two files
+  began with `MZ`, which is a corruption check, and the ISO comes from a floating path with no
+  digest. The output now says which of the two it did and prints the digest to pin.
 
 ### Still open
 
-- A VM app has no egress control. `-netdev user,id=net0` is built unconditionally, and
-  `ForwardPorts` only adds inbound `hostfwd` entries, so every guest gets unrestricted outbound
-  plus the host's loopback through slirp's gateway. That inverts the advice in the known-issues
-  table, which points at a VM as the stronger boundary for untrusted GUI apps: on the network
-  axis a container gets a fail-closed nftables ruleset and a guest gets nothing. This belongs to
-  `zvr` rather than to the schema. qemu's `restrict=on` is a blunt all-or-nothing answer; the
-  shape worth aiming at is the one the container side already uses, since pasta is a dependency
-  already and can back a qemu netdev, which would give both runtimes one network model instead
-  of two.
-
-- No VRAM limit exists, and one is deliberately not being added yet. An app granted `/dev/dri`
-  can allocate GPU memory until the device is exhausted, which is a denial of service against
-  the desktop rather than against itself, and `ResourcesMeta` cannot bound it. The mechanism
-  that would fix it is the kernel's `dmem` cgroup controller (Linux 6.14+), which needs the
-  DRM driver to register regions: on the development box the controller is present while
-  `dmem.capacity` is empty, so there is nothing to limit. A field now would read as a cap and
-  do nothing on nearly every machine. When regions exist it is additive, with no schema bump.
-  The VM's `hostmem` and `vgamem` are not caps and are not a substitute (architecture doc, 5.4).
-
-- The D-Bus proxy, the pod, its netns, the egress bridge and any published host port are not
-  torn down when an app exits on its own. The reaping goroutine that was meant to cover this
-  cannot run in the shipped product: every front-end launches through a short-lived `zcr`,
-  which exits moments after forking the app, and a clean exit was never covered by it at all.
-  Because `pod create` has no `--replace`, the leaked pod also makes the next launch of a
-  filtered app fail. Fixing it properly means a supervisor that outlives the app, which is a
-  design decision rather than a patch: the Wayland holder is already exactly that shape and
-  already knows when the app is gone, so extending it is the obvious candidate.
-- The already-running refusal reads `podman ps` at the top of the launch, but the app
-  container does not appear there until the end, so a second launch a second later still
-  passes the check and its fail-closed teardown removes the first launch's pod and proxy.
-  There is no lock in the launch path.
-- `zcr net` reports posture from the config file as it reads at report time, without probing
-  the running system, so editing a YAML changes what the attestation surface says about an
-  app that is already running.
-- A config run from a file path can claim an `AppNameID` that resolves to another app's
-  address, forging that app's Wayland `app_id`, container name, bus attribution row and
-  `zcr net` posture.
-- Every guest reaches host services bound to 127.0.0.1 through user-mode networking's
-  gateway. No config field constrains it, and the network model is documented only in the
-  inbound direction.
-- Release tags are unsigned and there are no published checksums, so a user who clones has
-  nothing to verify.
-- The multiterminal launch does its enforcement in a detached process with stdio discarded,
-  so a failed ruleset load or a rejected security context is reported as a successful launch.
+- A VM app has no egress control: `-netdev user` is unconditional and `ForwardPorts` only adds
+  inbound entries, so every guest gets unrestricted outbound plus the host's loopback through
+  slirp's gateway. This belongs to `zvr`, not the schema. pasta is already a dependency and can
+  back a qemu netdev, which would give both runtimes one network model.
+- No VRAM limit exists, deliberately. The mechanism is the kernel's `dmem` cgroup controller
+  (6.14+), which needs the DRM driver to register regions; on the development box the controller
+  is present while `dmem.capacity` is empty. A field now would read as a cap and do nothing.
+  Additive when regions exist, with no schema bump.
+- The proxy, pod, netns, bridge and published ports are not torn down when an app exits on its
+  own: the reaping goroutine cannot run, since every front-end launches through a short-lived
+  `zcr`. The leaked pod also makes the next filtered launch fail, `pod create` having no
+  `--replace`. The fix is a supervisor that outlives the app, which the Wayland holder already is.
+- The already-running refusal reads `podman ps` at the top of the launch, but the container does
+  not appear there until the end, so a second launch a second later still passes and its
+  fail-closed teardown removes the first one's pod and proxy. There is no lock in the launch path.
+- `zcr net` reports posture from the config file at report time without probing the running
+  system, so editing a YAML changes what the attestation surface says about a running app.
+- A config run from a file path can claim an `AppNameID` that resolves to another app's address,
+  forging that app's Wayland `app_id`, container name, bus row and `zcr net` posture.
+- Every guest reaches host services on 127.0.0.1 through user-mode networking's gateway.
+- Release tags are unsigned and there are no published checksums.
+- The multiterminal launch enforces in a detached process with stdio discarded, so a failed
+  ruleset load or a rejected security context is reported as a successful launch.
 
 ## [0.9.1] - 2026-07-31
 

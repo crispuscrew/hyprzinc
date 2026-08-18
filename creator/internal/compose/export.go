@@ -9,16 +9,11 @@ import (
 	"github.com/crispuscrew/zinc/common/domain/schema"
 )
 
-// FromApp renders one app definition as a compose project, and returns the notes naming
-// what could not come with it. Pure: no I/O, no store lookups.
-//
-// The notes are the honest half of this function. Everything a compose file can carry is
-// carried; the things it cannot - the egress lock-down above all - would otherwise be
-// absent without being mentioned, and a reader comparing the two files would reasonably
-// conclude Zinc was not doing anything the compose file does not show. A caller is
-// expected to print them.
-//
-// A VM app has no compose equivalent at all and is refused rather than half-rendered.
+// FromApp renders one app definition as a compose project and returns the notes naming what could not
+// come with it. Pure. The notes are the honest half: what compose cannot carry - the egress lock-down
+// above all - would otherwise be absent without being mentioned, and a reader comparing the two files
+// would conclude Zinc does nothing the compose file does not show. A VM app is refused rather than
+// half-rendered.
 func FromApp(cfg schema.AppConfig) (Project, []string, error) {
 	if cfg.Type == schema.ZincVirtualization {
 		return Project{}, nil, fmt.Errorf("%s is a VM app: compose describes containers, and a guest is not one", cfg.AppNameID)
@@ -64,11 +59,9 @@ func FromApp(cfg schema.AppConfig) (Project, []string, error) {
 		if service.DependsOn == nil {
 			service.DependsOn = Dependencies{}
 		}
-		// The condition cannot be decided from this app alone - whether the wait is for
-		// "started" or "healthy" is a property of the DEPENDENCY's ReadyCheck, and only its
-		// own config knows. service_started is the safe reading: it is what DependsOn means
-		// without a probe, and claiming service_healthy for a dependency that defines no
-		// healthcheck would make the compose file hang rather than run.
+		// The condition cannot be decided from this app alone: whether the wait is for "started" or "healthy"
+		// is a property of the DEPENDENCY's ReadyCheck. service_started is the safe reading, and claiming
+		// service_healthy for a dependency with no healthcheck would make the compose file hang.
 		service.DependsOn[dep] = Depend{Condition: ConditionStarted}
 	}
 	if desc := strings.TrimSpace(cfg.Description); desc != "" {
@@ -109,11 +102,9 @@ func FromApp(cfg schema.AppConfig) (Project, []string, error) {
 		note("InternalUserMeta.KeepUserID is not represented: mapping the host uid into the container is `podman --userns=keep-id`, which compose has no field for.")
 	}
 	if !cfg.DBusMeta.IsZero() {
-		// The direction of the loss is what matters here. An importer of this file gets an app
-		// with no bus grants, which is Zinc's fail-closed default and therefore safe - the app
-		// simply will not reach the services it needs. The unsafe reading is the opposite one:
-		// that exporting an app whose sandbox was deliberately narrowed produced a file
-		// carrying that decision. It does not, so it is said plainly.
+		// The direction of the loss matters: an importer gets an app with no bus grants, which is Zinc's
+		// fail-closed default. The unsafe reading is the opposite one - that exporting a narrowed sandbox
+		// produced a file carrying that decision. It does not, so it is said plainly.
 		note("DBusMeta (%d Talk, %d Own) is not represented: the filtered bus is a socket served by a proxy container the runner starts, and compose has no way to state either the proxy or the grants. An app imported from this file gets NO session bus, not these names.",
 			len(cfg.DBusMeta.Talk), len(cfg.DBusMeta.Own))
 	}

@@ -1,13 +1,9 @@
-// Package menu is a reusable, floating, filterable overlay menu for Wayland. It opens a
-// centered layer-shell surface, software-renders a fuzzy-filtered list (internal/render) into
-// a shared-memory buffer, and feeds keyboard input (internal/keymap) into a picker model. It
-// speaks the Wayland wire protocol directly through go-wayland - no cgo - and depends on no
-// sibling modules, so it builds static and any program can import it: an app launcher, a
-// wofi-like picker, a project's own menus.
+// Package menu is a reusable, floating, filterable overlay menu for Wayland: a centered
+// layer-shell surface, a software-rendered fuzzy-filtered list, keyboard input fed into a picker
+// model. It speaks the Wayland wire protocol directly through go-wayland - no cgo - and depends
+// on no sibling modules, so any program can import it.
 //
-// Run is the whole API: give it items and an ActivateFunc, get back the chosen index. The
-// event loop is deliberately thin; every decision it drives (filter, cursor, activate,
-// render) lives in the pure, unit-tested internal packages it calls.
+// Run is the whole API: items and an ActivateFunc in, chosen index out.
 package menu
 
 import (
@@ -37,17 +33,12 @@ type Item struct {
 	Marked      bool   // draws an indicator dot; the caller decides what it means (e.g. running)
 }
 
-// ActivateFunc is called when the user picks an item (Enter). Returning an error keeps the
-// menu open and shows the error in a banner; returning nil closes the menu with that item
-// selected. This lets the caller act while the menu is up - launch a program, print a line.
-// It may be nil, in which case Enter simply closes the menu and Run returns the chosen index.
+// ActivateFunc is called when the user picks an item. Returning an error keeps the menu open and
+// banners it; nil closes the menu. May be nil, in which case Enter just closes.
 //
-// It runs on its own goroutine rather than on the Wayland event loop, so a slow activation -
-// starting a container, building an image - leaves the overlay drawing and responsive instead
-// of freezing it on screen while it holds an exclusive keyboard grab. Only one call is ever in
-// flight: the menu shows a busy banner and ignores Enter until it returns. Esc takes the
-// overlay down immediately without waiting, and Run then returns once the call finishes, so no
-// activation ever outlives Run.
+// It runs on its own goroutine, so a slow activation leaves the overlay responsive rather than
+// frozen while it holds an exclusive keyboard grab. Only one call is ever in flight. Esc takes the
+// overlay down immediately and Run returns once the call finishes, so none outlives Run.
 type ActivateFunc func(item Item) error
 
 // Options tunes one Run. The zero value is usable: a default-size, opaque, animated overlay
@@ -371,11 +362,9 @@ func (application *app) loop() error {
 }
 
 // bindGlobal binds a registry global with a correctly length-prefixed interface string.
-// go-wayland v0.0.0-20230130's Registry.Bind writes the interface string's length field as
-// the PADDED length, which leaves NUL padding inside the declared string; modern libwayland
-// rejects that ("string has embedded nul") and closes the connection. This encodes the same
-// wl_registry.bind request but with the true string length (len+1), padding the buffer
-// separately, using go-wayland's exported wire primitives.
+// go-wayland v0.0.0-20230130 writes the length field as the PADDED length, leaving NUL padding
+// inside the declared string, which modern libwayland rejects ("string has embedded nul") by
+// closing the connection. Same request, true length, padded separately.
 func bindGlobal(registry *client.Registry, name uint32, iface string, version uint32, proxy client.Proxy) error {
 	const opcode = 0
 	padded := client.PaddedLen(len(iface) + 1)
@@ -463,12 +452,9 @@ func (application *app) handleKey(event client.KeyboardKeyEvent) {
 	if event.State != uint32(client.KeyboardKeyStatePressed) {
 		return
 	}
-	// Any keypress dismisses a shown launch error and completes the entrance fade (which also
-	// recovers the rare case of a compositor that withholds frame callbacks). Both change what
-	// the overlay should look like, so commit a frame here: a key that no branch below handles
-	// - a bare modifier, an unmapped function key - would otherwise leave the last committed
-	// buffer stuck at a partial fade, or still showing a dismissed error banner, with no
-	// further frame callback coming to correct it.
+	// Any keypress dismisses a launch error and completes the entrance fade, so commit a frame here:
+	// a key no branch below handles would otherwise leave the last buffer stuck mid-fade with no
+	// further frame callback coming.
 	commit := application.launchErr != ""
 	application.launchErr = ""
 	if application.animating {
@@ -542,15 +528,9 @@ func (application *app) handleKey(event client.KeyboardKeyEvent) {
 	}
 }
 
-// activateSelected starts the caller's ActivateFunc on the highlighted item, on its own
-// goroutine. Running it inline would block the event loop for as long as it takes - seconds to
-// start a container, minutes to build an image - during which the overlay could not redraw and
-// would not give up its exclusive keyboard grab, so the whole desktop looked hung. Instead the
-// menu shows a busy banner and keeps drawing while it runs; finishActivate handles the result.
-//
-// A second Enter while one is in flight is ignored rather than starting a duplicate: two
-// concurrent activations of the same item are exactly the double-launch race that lets one
-// teardown kill the other's work.
+// activateSelected runs ActivateFunc on its own goroutine: inline it would block the event loop
+// for seconds or minutes while holding an exclusive keyboard grab, and the desktop would look
+// hung. A second Enter while one is in flight is ignored rather than starting a duplicate.
 func (application *app) activateSelected() {
 	if application.activating {
 		return
@@ -590,12 +570,9 @@ func (application *app) finishActivate(err error) {
 	application.closed = true
 }
 
-// awaitActivate blocks until an activation the user dismissed the overlay out of has finished,
-// so no ActivateFunc call ever outlives Run - a caller that pops the menu on a hotkey gets its
-// state back when Run returns, with nothing still running behind it. Run calls this only after
-// the overlay is off screen, so a slow activation delays Run's return and nothing else. The
-// item still counts as activated if it succeeded: the work happened, the user only stopped
-// watching it.
+// awaitActivate blocks until an activation the user dismissed the overlay out of has finished, so
+// no ActivateFunc call outlives Run. Called only after the overlay is off screen. The item still
+// counts as activated if it succeeded.
 func (application *app) awaitActivate() error {
 	if !application.activating {
 		return nil
@@ -638,11 +615,10 @@ func (application *app) handleLayerConfigure(serial, width, height uint32) {
 	application.redraw()
 }
 
-// shmBuffer is one wl_buffer plus the shared memory backing it. The mapping and the wl_buffer
-// must stay alive - and the wl_buffer stays registered with go-wayland - until the compositor
-// sends its release. Destroying a buffer the compositor still holds means a later release
-// event lands on an unregistered object, which go-wayland's dispatch treats as fatal
-// ("unable find sender"). So a resize retires the old buffer rather than destroying it.
+// shmBuffer is one wl_buffer plus its shared memory. Both must stay alive, and the wl_buffer
+// registered with go-wayland, until the compositor releases it - a release landing on an
+// unregistered object is fatal to go-wayland's dispatch ("unable find sender"). So a resize
+// retires the old buffer rather than destroying it.
 type shmBuffer struct {
 	buffer        *client.Buffer
 	file          *os.File
@@ -753,12 +729,9 @@ func (application *app) freeRetired(buf *shmBuffer) {
 	}
 }
 
-// redraw renders the model and blits it into the shm buffer as ARGB8888 (byte order
-// B,G,R,A little-endian), then commits the surface.
-//
-// It reuses one buffer and does not wait for wl_buffer.release, so a burst of redraws can
-// briefly tear - a cosmetic torn read (both sides map the same live file), never a crash.
-// Double-buffering is a future refinement; for a redraw-on-keystroke launcher this is fine.
+// redraw renders the model into the shm buffer as ARGB8888 (byte order B,G,R,A little-endian) and
+// commits. It reuses one buffer and does not wait for wl_buffer.release, so a burst of redraws can
+// briefly tear: cosmetic, never a crash.
 func (application *app) redraw() {
 	buf := application.current
 	if buf == nil || buf.mmap == nil {
@@ -794,15 +767,12 @@ func (application *app) redraw() {
 	// depend on binding wl_compositor at v4+. We redraw the whole surface, so full-surface
 	// damage is exactly right.
 	application.surface.Damage(0, 0, int32(buf.width), int32(buf.height))
-	// Ask for a frame callback while there is anything left to pick up: animation to advance,
-	// an activation to collect, or (in the grid) a thumbnail still decoding or decoded but not
-	// yet drawn. The "decoded but not drawn" half matters: a decode that lands after Frame read
-	// the cache but before this check would otherwise leave nothing armed to draw it, stranding
-	// that tile on its placeholder until the next keypress.
+	// Ask for a frame callback while anything is left to pick up: animation, an activation, or a
+	// thumbnail still decoding or decoded but not yet drawn. The "decoded but not drawn" half matters,
+	// or a decode landing between Frame and this check strands its tile on a placeholder.
 	//
-	// The request must be followed by the commit below. wl_surface.frame is double-buffered
-	// state that the compositor only applies when the surface commits, so asking for a callback
-	// without committing arms one that can never fire.
+	// The request must be followed by the commit below: wl_surface.frame is double-buffered state, so
+	// asking without committing arms a callback that can never fire.
 	if application.animating || application.activating || application.thumbsActive() {
 		application.requestFrame()
 	}
@@ -849,16 +819,10 @@ func (application *app) requestFrame() {
 	application.framePending = true
 }
 
-// onFrame drives everything paced by frame callbacks: the entrance fade, collecting a finished
-// activation, and (in the grid) picking up background-decoded thumbnails.
-//
-// Every branch that wants another frame goes through redraw, which commits. Asking for a frame
-// callback without committing does not work: wl_surface.frame is double-buffered state applied
-// at the next commit, so the callback simply never fires and the poll dies silently - which is
-// what stranded a whole grid of thumbnails on their placeholders until the next keypress
-// whenever a decode outlasted the entrance fade (the fade's own redraws had been hiding it).
-// Redrawing a frame that turns out identical costs one software render; losing the poll costs
-// the feature.
+// onFrame drives everything paced by frame callbacks: the entrance fade, a finished activation,
+// and background-decoded thumbnails. Every branch that wants another frame goes through redraw,
+// which commits - see the note above about frame callbacks that never fire. Redrawing an identical
+// frame costs one software render; losing the poll costs the feature.
 func (application *app) onFrame(event client.CallbackDoneEvent) {
 	application.framePending = false
 	application.frameMs = event.CallbackData

@@ -1,12 +1,9 @@
 package menu
 
-// Minimal client for the wlr-layer-shell-unstable-v1 protocol (zwlr_layer_shell_v1 /
-// zwlr_layer_surface_v1). go-wayland ships only core + xdg-shell, so this is hand-written in
-// the same style as its generated code: proxy types embedding client.BaseProxy, requests
-// encoded straight onto the wire, and a Dispatch method that decodes the events we care
-// about. Only the subset the menu needs is here - enough to put a fixed-size, centered, keyboard-
-// grabbing overlay on screen, which is how launchers (fuzzel, wofi, tofi) float above tiled
-// windows instead of being tiled themselves.
+// Minimal client for wlr-layer-shell-unstable-v1. go-wayland ships only core + xdg-shell, so this is
+// hand-written in the style of its generated code: proxy types embedding client.BaseProxy, requests
+// encoded onto the wire, and a Dispatch that decodes the events we care about. Only the subset the
+// menu needs - enough to float a fixed-size, centered, keyboard-grabbing overlay above tiled windows.
 
 import (
 	"github.com/rajveermalviya/go-wayland/wayland/client"

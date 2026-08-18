@@ -1,16 +1,10 @@
-// Package store persists app definitions as <name>.yaml files under the user's config
-// directory (~/.config/zinc/apps) and provides the YAML decode/encode used by the
-// $EDITOR round-trip.
+// Package store persists app definitions as <name>.yaml under ~/.config/zinc/apps, and provides the
+// YAML codec used by the $EDITOR round-trip. It is the creator's own copy of the on-disk format, so
+// zc never imports zcr, and both sides use the same schema plus the same atomic-write + KnownFields
+// codec.
 //
-// It is the creator's own copy of the on-disk format - deliberately independent of the
-// runner so zc never imports zcr (zc authors app files; zcr runs them). Both sides
-// read/write the exact same layout: the shared schema (common) plus this identical
-// atomic-write + KnownFields codec, so a file zc writes is one zcr loads verbatim.
-//
-// Save validates (validate.Validate) before writing, so invalid config never lands on
-// disk, and writes are atomic (temp file + rename) so a crash can't leave a
-// half-written definition. Load only decodes - zcr runs validate.Validate again at
-// launch time, which catches drift from hand edits (docs/architecture.md section 3).
+// Save validates before writing and writes atomically; Load only decodes, since zcr validates again
+// at launch and that is what catches drift from hand edits (docs section 3).
 package store
 
 import (
@@ -91,21 +85,14 @@ func (sto *Store) Path(name string) string {
 	return filepath.Join(sto.Root, name+".yaml")
 }
 
-// keyRE is the app-name charset the schema enforces (lowercase [a-z0-9._-], starting
-// alphanumeric). A file zc wrote always matches it. List skips anything that does not, so a
-// hand-dropped or shared file with a flag-like name ("--net=host.yaml") or a path-like one
-// ("notes.yaml.yaml", listed as "notes.yaml", which zcr re-reads as ./notes.yaml) never
-// becomes a row that can be run. The launcher has had this guard since it shipped; the
-// authoring tool drives the same runner and needs the same one.
+// keyRE is the app-name charset the schema enforces. List skips anything that does not match, so a
+// hand-dropped file with a flag-like name ("--net=host.yaml") or a path-like one never becomes a row
+// that can be run.
 var keyRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
-// safeName rejects a name that is not a plain store key - one with a path separator
-// or a ".." segment - so a crafted name (a CLI delete argument, an unvalidated
-// dependency) cannot escape the apps directory when joined into Path.
-//
-// The ".." test compares SEGMENTS rather than searching the string: "my..app" is a legal
-// schema name and contains "..", so a substring test refuses a name the validator accepts,
-// leaving an app that zc can create and then never delete, edit or validate again.
+// safeName rejects a name carrying a path separator or a ".." segment, so a crafted name cannot
+// escape the apps directory when joined into Path. The ".." test compares SEGMENTS: "my..app" is a
+// legal schema name, and a substring test would leave an app zc can create and never delete again.
 func safeName(name string) error {
 	if name == "" || name != filepath.Base(name) {
 		return fmt.Errorf("store: invalid app name %q", name)
@@ -193,11 +180,10 @@ func (sto *Store) LoadResolved(name string) (schema.AppConfig, error) {
 	if derr != nil {
 		return schema.AppConfig{}, derr
 	}
-	// An app must not be able to resolve into another app's identity. A child that omits
-	// AppNameID inherits its base's, and AppNameID is what the runner names the container,
-	// the pod and the derived image after - so `zcr run notes` would build, and `zcr stop
-	// notes` would destroy, whatever `browser` is. Inheriting apps are hand-written (Save
-	// refuses to rewrite one), so nothing else keeps the filename and the name in step.
+	// An app must not be able to resolve into another app's identity: a child omitting AppNameID inherits
+	// its base's, and that is what names the container, the pod and the derived image - so `zcr stop
+	// notes` would destroy whatever `browser` is. Inheriting apps are hand-written, so nothing else keeps
+	// the filename and the name in step.
 	if resolved.AppNameID != name {
 		return schema.AppConfig{}, fmt.Errorf("config: %s: resolves to AppNameID %q - an app must keep its own name; state AppNameID in the app rather than taking the base's", name, resolved.AppNameID)
 	}
@@ -231,16 +217,12 @@ func (sto *Store) Marshal(cfg schema.AppConfig) ([]byte, error) {
 	return Marshal(cfg)
 }
 
-// Save validates cfg and atomically writes it to <cfg.AppNameID>.yaml. Invalid config
-// is rejected before anything touches disk.
+// Save validates cfg and atomically writes it to <cfg.AppNameID>.yaml.
 //
-// An app that inherits is refused, and that is a data-loss guard rather than a limitation
-// of the format. Inheritance is recorded in which keys a file STATES, and a decoded
-// AppConfig no longer knows: every field it did not state has become an ordinary zero value,
-// indistinguishable from one stated as zero. Writing that struct back would state all of
-// them, so the child would stop inheriting anything and would instead override its base with
-// zeros - silently, and looking entirely normal on disk. Refusing costs an inheriting app
-// the struct-based editors; writing would cost it its meaning.
+// An app that inherits is refused, as a data-loss guard: inheritance lives in which keys a file
+// STATES, and a decoded AppConfig cannot tell an unstated field from one stated as zero. Writing it
+// back would state all of them, so the child would override its base with zeros, silently and looking
+// entirely normal on disk.
 func (sto *Store) Save(cfg schema.AppConfig) error {
 	if base := strings.TrimSpace(cfg.Inherits); base != "" {
 		return fmt.Errorf("store: %s inherits from %q, so it is edited as a file rather than rewritten from a form: %s\n"+

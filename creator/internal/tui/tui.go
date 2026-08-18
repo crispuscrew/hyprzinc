@@ -1,15 +1,9 @@
-// Package tui is zc's keyboard-first terminal UI (docs/architecture.md section 9.1, M2).
+// Package tui is zc's keyboard-first terminal UI (docs section 9.1, M2). Model + Update are the
+// functional core, with all I/O in tea.Cmd closures (commands.go), so the decision logic is testable
+// without a terminal.
 //
-// The Model + Update form the functional core: Update is a pure transition over
-// (Model, Msg). All I/O - store reads/writes (authoring) and the zcr shell-outs
-// (running apps) - happens in tea.Cmd closures (commands.go) that drive the creator
-// backend, so the decision logic is testable without a terminal and the TUI is a thin
-// driving adapter.
-//
-// Scope: create / edit / delete / rename / launch / stop / logs, end-to-end by
-// keyboard. The form edits the scalar fields; list-valued fields (Capabilities,
-// NetworkLists, Volumes, Configs, Keys) stay YAML-editable via the advanced $EDITOR
-// action.
+// Scope: create / edit / delete / rename / launch / stop / logs. The form edits the scalar fields;
+// list-valued fields stay YAML-editable through the advanced $EDITOR action.
 package tui
 
 import (
@@ -35,19 +29,14 @@ const (
 	modeKeys   // keybind-scheme picker
 )
 
-// appRow carries an app twice on purpose. cfg is the RESOLVED config - what the app
-// actually is - and drives everything the list shows, so an app that inherits its image or
-// its network is not listed as though it had neither. raw is the file as written, and is
-// what the edit form opens: a form that loaded the resolved config would write the base's
-// values back into the child as if the child had stated them.
+// appRow carries an app twice on purpose. cfg is the RESOLVED config and drives what the list shows;
+// raw is the file as written and is what the edit form opens, since a form loading the resolved config
+// would write the base's values back into the child.
 //
-// name is the STORE KEY (the filename without .yaml), and it is what every ACTION uses. The
-// config's own AppNameID is only what the file claims to be:
-// LoadResolved refuses a mismatch, but a row that failed to resolve is still listed so it
-// can be repaired, and such a row carries the raw config with an unchecked AppNameID. Acting
-// on that would mean a dropped "notes.yaml" claiming `AppNameID: firefox` sends delete, run
-// and stop at the real firefox instead - deleting a reviewed app while reporting success and
-// leaving the hostile file in place.
+// name is the STORE KEY, and every ACTION uses it. The config's own AppNameID is only what the file
+// claims: a row that failed to resolve is still listed so it can be repaired, so a dropped
+// "notes.yaml" claiming `AppNameID: firefox` would otherwise send delete, run and stop at the real
+// firefox.
 type appRow struct {
 	name    string
 	cfg     schema.AppConfig
@@ -356,11 +345,9 @@ func (mdl Model) handleKeysKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return mdl, nil
 }
 
-// handleRenameKey drives the rename prompt (modeRename): a text input prefilled with
-// the current name. Enter commits the rename through the service (which loads the old
-// definition, rewrites app.name, saves it, and deletes the old - the "delete +
-// recreate"); esc cancels; every other key edits the field. A blank or unchanged name
-// is treated as a cancel so Enter is never a destructive no-op.
+// handleRenameKey drives the rename prompt: Enter commits through the service (load, rewrite the name,
+// save, delete the old), esc cancels. A blank or unchanged name is treated as a cancel, so Enter is
+// never a destructive no-op.
 func (mdl Model) handleRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":

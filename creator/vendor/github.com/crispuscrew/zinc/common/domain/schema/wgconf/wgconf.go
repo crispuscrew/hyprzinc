@@ -1,11 +1,10 @@
-// Package wgconf reads a wg-quick-format WireGuard config into the parts the runner needs
-// to build the interface itself. Pure: it parses text and performs no I/O.
+// Package wgconf reads a wg-quick-format WireGuard config into the parts the runner needs to build the
+// interface itself. Pure: it parses text and performs no I/O.
 //
-// It exists because `wg setconf` and wg-quick do not accept the same file. wg-quick is a
-// shell script that reads Address, DNS, MTU and the script hooks, strips them, and hands the
-// rest to `wg setconf`. Zinc does the stripping here instead, in Go, where what is accepted
-// and what is refused can be stated and tested - rather than shipping wg-quick, which wants
-// to be root, rewrite resolv.conf, and run whatever the file tells it to.
+// It exists because `wg setconf` and wg-quick do not accept the same file: wg-quick is a shell script
+// that reads Address, DNS, MTU and the script hooks, strips them, and hands the rest on. Zinc strips
+// them here instead, rather than shipping a script that wants to be root, rewrite resolv.conf, and run
+// whatever the file tells it to.
 package wgconf
 
 import (
@@ -25,11 +24,10 @@ type Config struct {
 	// Routes are the peers' AllowedIPs: what the tunnel carries, and so what is routed into
 	// it.
 	Routes []string
-	// Endpoints are the peers' addresses and ports. Two callers need them and need different
-	// halves: the runner pins the ADDRESS to the pre-existing route, because a route to an
-	// endpoint through the tunnel would send the encrypted packets into the thing carrying
-	// them; and the creator uses both to author the egress rule that lets the handshake out
-	// in the first place.
+	// Endpoints are the peers' addresses and ports, and two callers need different halves: the runner pins
+	// the ADDRESS to the pre-existing route, since a route to an endpoint through the tunnel would send
+	// the encrypted packets into the thing carrying them; the creator uses both to author the egress rule
+	// that lets the handshake out.
 	Endpoints []Endpoint
 	// MTU is the [Interface] MTU, or 0 when the file does not set one.
 	MTU int
@@ -200,34 +198,22 @@ func parseEndpoint(value string) (Endpoint, error) {
 	return Endpoint{Host: host, Port: port}, nil
 }
 
-// isAddress reports whether text is a bare IPv4 or IPv6 address, decided by net.ParseIP and
-// nothing else.
-//
-// This is a security boundary, the same one parseCIDRList guards for Address and AllowedIPs.
-// The Endpoint host is interpolated into the tunnel-build script that the netfilter helper
-// runs with CAP_NET_ADMIN in the app's network namespace, BEFORE the nft ruleset closes it.
-// A hand-rolled "looks like an address" test is the wrong tool: the earlier one accepted any
-// colon-bearing string with no slash or space, so "::$(cmd)::" passed as an IPv6 address and
-// reached that script. Whether a downstream tool happens to reject it as well is not the
-// question; the value must be refused here.
+// isAddress reports whether text is a bare IP, decided by net.ParseIP and nothing else. A security
+// boundary: the Endpoint host is interpolated into the tunnel-build script the netfilter helper runs
+// with CAP_NET_ADMIN, BEFORE the nft ruleset closes the netns. The earlier hand-rolled test accepted
+// any colon-bearing string without a slash or space, so "::$(cmd)::" passed as an IPv6 address.
 func isAddress(text string) bool {
 	return net.ParseIP(text) != nil
 }
 
-// splitList reads a comma-separated value into its entries.
-// parseCIDRList splits a comma-separated list and requires every entry to be an address or
-// a network, so nothing else can be in one.
+// splitList reads a comma-separated value into its entries. parseCIDRList requires every entry to be an
+// address or a network.
 //
-// This is a security boundary, not tidiness. Both lists it guards are interpolated into the
-// `sh -c` script that the netfilter helper runs, and that helper holds CAP_NET_ADMIN in the
-// app's network namespace and runs BEFORE the egress ruleset is loaded - so a value here
-// carrying `; command` would execute with the netns still unfiltered. This package already
-// refuses PostUp and PreUp on the grounds that "a config file is not a place to accept code
-// from"; an unchecked Address is the same hole by another name, and a wg-quick file is
-// exactly the thing a person pastes in from a VPN provider.
-//
-// Bare addresses are accepted alongside prefixes because wg-quick takes both, and `ip` reads
-// a bare address as a host route.
+// A security boundary, not tidiness: both lists are interpolated into the `sh -c` script the netfilter
+// helper runs with CAP_NET_ADMIN before the egress ruleset loads, so a value carrying `; command`
+// would execute with the netns unfiltered. This package already refuses PostUp on the grounds that a
+// config file is not a place to accept code from, and a wg-quick file is exactly what a person pastes
+// in from a VPN provider. Bare addresses are accepted because wg-quick takes both.
 func parseCIDRList(value string, line int, setting string) ([]string, error) {
 	entries := splitList(value)
 	for _, entry := range entries {

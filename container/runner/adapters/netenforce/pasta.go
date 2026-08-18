@@ -1,20 +1,10 @@
-// Package netenforce holds the NetEnforcer adapter - the swappable egress mechanism.
-// It implements ports.NetEnforcer: how the app container attaches to the network
-// (RunFlags), what must happen to establish and LOCK the netns before the app starts
-// (Prepare), and how to tear it down (Teardown).
+// Package netenforce holds the NetEnforcer adapter - the swappable egress mechanism. It implements
+// ports.NetEnforcer: how the app attaches to the network (RunFlags), what must happen to LOCK the
+// netns before the app starts (Prepare), and teardown.
 //
-// One mechanism ships today: an app's NetworkLists are enforced as an nftables
-// allow/deny ruleset on the app's own pasta netns (a pod). An app with no
-// NetworkLists gets --network none. A future mechanism - eBPF egress, a proxy
-// sidecar, an external traffic controller - is one more file here implementing the
-// same interface; nothing in app or the podman runtime changes (docs section 5.3, section 13).
-//
-// Scope (this build): self-scoped egress lists (Host=false, empty AppName), tier-3 LAN
-// publishing (Ingress && Host - an nft input chain plus pod `-p` forwards), and tier-2
-// sibling links (a private --internal bridge per producer, interface-gated per-port nft;
-// a producer's self-scoped ingress + a consumer's egress naming its AppName). checkNetwork
-// forbids mixing tier-2 with other networking, and still rejects host-scoped egress and
-// gateway (multi-homing) lists before this adapter runs.
+// One mechanism ships today: NetworkLists as an nftables ruleset on the app's own pasta netns. No
+// NetworkLists means --network none. Scope: self-scoped egress, tier-3 LAN publishing, tier-2
+// sibling links; checkNetwork rejects the rest before this runs (docs section 5.3, section 13).
 package netenforce
 
 import (
@@ -31,19 +21,12 @@ import (
 // Compile-time check that the enforcer satisfies ports.NetEnforcer.
 var _ ports.NetEnforcer = Enforcer{}
 
-// DefaultNetfilterImage is the locally built helper that carries nft. It runs once
-// per filtered launch to lock the pod's netns before the app starts. Build it with
-// `make netfilter-image`. The nft step runs it with --pull=never (see nftApplyArgs):
-// the privileged helper is always the locally vetted build, never pulled from a
-// registry, and a missing image fails fast with a clear error. The tag must match the
-// netfilter image build (runner side).
+// DefaultNetfilterImage is the local helper carrying nft, run once per filtered launch to lock the
+// netns. Build with `make netfilter-image`; run with --pull=never, so it is never fetched.
 const DefaultNetfilterImage = "localhost/zinc/netfilter:local"
 
-// Enforcer drives an app's NetworkLists onto the network. It satisfies ports.NetEnforcer.
-//
-// Lookup resolves the Domains an egress list allows by name; a zero Enforcer uses the host
-// resolver, which is what production wants and what every existing caller gets. It is a
-// field so the resolution can be driven without a network in tests.
+// Enforcer drives an app's NetworkLists onto the network. Lookup resolves Domains; a zero Enforcer
+// uses the host resolver. It is a field so resolution can be driven without a network in tests.
 type Enforcer struct{ Lookup LookupFunc }
 
 // PodName is the pod that owns a filtered app's netns.
@@ -127,11 +110,9 @@ func (Enforcer) RunFlags(cfg schema.AppConfig) []string {
 	return []string{"--network", "none"}
 }
 
-// Prepare returns the steps that guarantee no unfiltered window (section 5.3): ensure any tier-2
-// link bridges exist, create the pod (its netns), then lock the netns with nft *before
-// any app starts*. The app run itself is appended by the caller (app layer) using
-// RunFlags. An unfiltered app has nothing to prepare. Link networks are created
-// idempotently (--ignore) and left in place on teardown - a sibling may still use one.
+// Prepare returns the steps that guarantee no unfiltered window (section 5.3): ensure link bridges,
+// create the pod, lock the netns with nft, all before any app starts. Link networks are left in
+// place on teardown, since a sibling may still use one.
 func (enf Enforcer) Prepare(cfg schema.AppConfig, opt options.HostOptions) ([]ports.Command, error) {
 	if !filtered(cfg) {
 		return nil, nil
@@ -164,12 +145,8 @@ func (enf Enforcer) Prepare(cfg schema.AppConfig, opt options.HostOptions) ([]po
 		})
 	}
 	steps = append(steps, ports.Command{Args: podCreateArgs(cfg, pod), Desc: "create pod (netns)"})
-	// Routes first, rules second: resolving the gateway needs DNS, and the ruleset that
-	// follows closes the netns. Both are done before the app starts, so the app still never
-	// sees an unlocked network.
-	// The tunnel goes up before the routes that may point into it, and both before the
-	// ruleset - building it needs the netns open (the handshake is real traffic), and the
-	// ruleset is what closes it. All of it still happens before the app exists.
+	// Routes first, rules second, tunnel before both: resolving a gateway needs DNS and the handshake
+	// is real traffic, and the ruleset is what closes the netns.
 	tunnelStep, err := tunnelCommand(cfg, image)
 	if err != nil {
 		return nil, err
@@ -188,11 +165,9 @@ func (enf Enforcer) Prepare(cfg schema.AppConfig, opt options.HostOptions) ([]po
 // unfiltered app.
 func (Enforcer) Teardown(cfg schema.AppConfig) []ports.Command {
 	if !filtered(cfg) {
-		// rm -f, not stop. A KeepAlive app runs without --rm, so `stop` leaves an Exited
-		// container holding the name, and the next `podman run --name <app>` fails with
-		// "name already in use" - permanently, since every later launch hits the same thing.
-		// StartApp is detached, so the CLI reports success while nothing starts. --ignore
-		// makes it idempotent, the same reason dbusproxy.Teardown uses it for the proxy.
+		// rm -f, not stop. A KeepAlive app runs without --rm, so `stop` leaves an Exited container holding
+		// the name and every later run fails with "name already in use" - invisibly, since StartApp is
+		// detached.
 		return []ports.Command{{
 			Args: []string{"rm", "-f", "--ignore", cfg.AppNameID},
 			Desc: "remove " + cfg.AppNameID,
@@ -202,16 +177,9 @@ func (Enforcer) Teardown(cfg schema.AppConfig) []ports.Command {
 		Args: []string{"pod", "rm", "-f", PodName(cfg.AppNameID)},
 		Desc: "remove pod " + PodName(cfg.AppNameID),
 	}}
-	// The per-app egress bridge goes with it. It is this app's alone - a bridge per app is
-	// what keeps apps off each other's L2 - so nothing else can be using it, and left behind
-	// it would accumulate one podman network per app that ever ran. The LINK networks are
-	// deliberately not removed: a sibling may still be on one.
-	//
-	// -f rather than --ignore, which `podman network rm` does not have (checked, not assumed
-	// - the flag exists on other podman subcommands, which is how one talks oneself into it).
-	// -f returns 0 for a network that is already gone, so a second teardown is not an error,
-	// and its other half - removing containers still on the network - has nothing to act on
-	// here, because the pod that used it was removed by the step above.
+	// The per-app egress bridge goes with it; LINK networks stay, since a sibling may be on one.
+	// -f rather than --ignore, which `podman network rm` does not have, and -f returns 0 for a network
+	// already gone.
 	if needsOwnEgress(cfg) && len(links(cfg)) > 0 {
 		steps = append(steps, ports.Command{
 			Args: []string{"network", "rm", "-f", EgressNetwork(cfg.AppNameID)},
@@ -261,28 +229,17 @@ func forwards(cfg schema.AppConfig) bool {
 	return false
 }
 
-// routeCommands installs the sibling routes inside the app's netns, before the app starts.
-//
-// The gateway's address is resolved at this moment rather than written into the config,
-// because podman assigns it and it changes when the gateway is recreated. It resolves by the
-// network alias podman already gives every app on a link (its AppNameID), using the link's
-// own DNS - so a config never carries an address, and a gateway that restarts on a new one
-// is picked up the next time a client starts.
-//
-// The step runs in the same helper as the ruleset and before it, so DNS is still reachable:
-// afterwards the netns is default-drop. Both run before the app, so the app still never sees
-// an unlocked network.
+// routeCommands installs the sibling routes inside the app's netns, before the app starts. The
+// gateway's address is resolved now rather than stored, because podman assigns it and it changes
+// when the gateway is recreated. Runs before the ruleset, while DNS still works.
 func routeCommands(cfg schema.AppConfig, image string) []ports.Command {
 	var steps []ports.Command
 	routes := viaLists(cfg)
 	for index, route := range routes {
 		cidrs := route.cidrs
-		// The redirected resolver has to be routed through the sibling too, and it is not
-		// covered by the list's own CIDRs unless the author happened to include it. Without
-		// this, an app routing only some destinations through a VPN sends every DNS query -
-		// rewritten to the declared resolver by the nat rule - out its OWN egress in the
-		// clear, while the schema and this file both say the queries travel inside the
-		// tunnel. It goes on the first Via route, since the dnat sends all of them there.
+		// The redirected resolver needs a route through the sibling too, or an app routing only some
+		// destinations through a VPN sends every DNS query out its own egress in the clear. First Via
+		// route, since the dnat sends all of them there.
 		if index == 0 {
 			if server := dnsRedirect(cfg); server != "" {
 				cidrs = append(append([]string{}, cidrs...), hostRoute(server))
@@ -307,11 +264,8 @@ func routeCommands(cfg schema.AppConfig, image string) []ports.Command {
 			Args: []string{
 				"run", "--pod", PodName(cfg.AppNameID), "--rm", "--pull", "never",
 				"--security-opt", "no-new-privileges", "--cap-drop", "all", "--cap-add", "NET_ADMIN",
-				// --user 0 is root OF THE POD'S user namespace, which is what owns the netns.
-				// Without it a keep-id pod runs this helper as an ordinary uid, and nft cannot
-				// touch the namespace at all ("cache initialization failed: Operation not
-				// permitted"). A no-op for a pod that is not keep-id, where the default already is
-				// that root.
+				// --user 0 is root of the POD'S user namespace, which owns the netns. Without it a keep-id pod runs
+				// this helper as an ordinary uid and nft fails with "cache initialization failed".
 				"--user", "0",
 				image, "sh", "-c", script.String(),
 			},
@@ -340,24 +294,12 @@ func isLinkList(netList schema.NetworkList) bool {
 	return producer || consumer
 }
 
-// NFTRuleset renders the nftables ruleset locked into an app's netns before it starts
-// (section 5.3). Pure over the validated config.
+// NFTRuleset renders the ruleset locked into an app's netns before it starts (section 5.3). Pure
+// over the validated config. zlink* bridges are gated by INTERFACE, everything else by ADDRESS and
+// port, so an app can be both at once.
 //
-// The rules that decide something carry a counter and a comment naming them, which is what
-// Counters reads back; which ones, and why not all of them, is at "counters" below.
-//
-// One app can now be gated both ways at once, which is what routing through a sibling
-// needs: the private zlink* bridges are accepted by INTERFACE, and everything else is
-// gated by ADDRESS and port. Before, an app was one or the other and mixing them was
-// rejected at launch, because whichever ruleset ran would have ignored the other kind of
-// list entirely - the address rules of a linked app simply vanished.
-//
-// Chain policy comes from the NON-link lists alone. A link list is structurally a
-// whitelist (validation refuses a blacklist one), so folding it into the policy decision
-// would flip an app that pairs a link with an all-blacklist egress from default-accept to
-// default-drop and silently deny everything the blacklist meant to leave open. With no
-// non-link lists in a direction the policy stays drop, which is what a link-only app has
-// always had.
+// Chain policy comes from the NON-link lists alone: a link list is structurally a whitelist, so
+// folding it in would flip an app that pairs a link with an all-blacklist egress to default-drop.
 func NFTRuleset(cfg schema.AppConfig) string {
 	var egress, ingress []listRule
 	for index, netList := range cfg.NetworkMeta.NetworkLists {
@@ -375,17 +317,9 @@ func NFTRuleset(cfg schema.AppConfig) string {
 
 	var bld strings.Builder
 
-	// Replace, never merge. `nft -f -` loads INTO the namespace's existing ruleset, so
-	// without this a table that is already there keeps its rules and they evaluate ABOVE
-	// everything below - which would make the ruleset a function of the config plus whatever
-	// was there first, rather than of the validated config alone. The create-then-delete pair
-	// is the idempotent way to say "start from nothing": `table` is a no-op when it already
-	// exists, so the `delete` that follows always has something to remove and never errors on
-	// a clean namespace. The whole file is one atomic transaction, so there is no window in
-	// which the table is gone.
-	// Both tables Zinc writes are cleared, not just the filter one: the DNS redirect lives in
-	// `ip nat`, and a stale rule there would send the app's queries somewhere the config never
-	// named. The netns is created fresh for this launch, so nothing else owns either table.
+	// Replace, never merge. `nft -f -` loads INTO the existing ruleset, so leftover rules would
+	// evaluate above these. create-then-delete is the idempotent way to start from nothing, in one
+	// atomic transaction. Both Zinc tables are cleared: the DNS redirect lives in `ip nat`.
 	bld.WriteString("table inet zinc\ndelete table inet zinc\n")
 	bld.WriteString("table ip nat\ndelete table ip nat\n")
 	bld.WriteString("table inet zinc {\n")
@@ -420,32 +354,17 @@ func NFTRuleset(cfg schema.AppConfig) string {
 	writeBackstop(&bld, egressPolicy)
 	bld.WriteString("\t}\n")
 
-	// input (ingress): who may reach the app's published ports. Emitted when the app
-	// publishes to the LAN or serves siblings on its own link; without either there is no
-	// input base chain at all, so ingress stays closed.
-	// An input chain is emitted whenever anything could arrive: a published or sibling-facing
-	// list, or ANY link at all. The last clause is not redundant - an app that only consumes a
-	// sibling still sits on that shared bridge, where the producer and every other consumer
-	// can reach it. Leaving the chain out does not leave inbound closed, it leaves inbound
-	// UNFILTERED, because nftables applies no policy to a hook that has no base chain.
-	// hasTunnel is in this condition for exactly the reason the paragraph above gives about
-	// links: an app with a WireGuard tunnel sits on an interface its peer can address, so
-	// leaving the chain out leaves that direction UNFILTERED rather than closed. With
-	// AllowedIPs 0.0.0.0/0 the peer can reach any port on the app's tunnel address, and the
-	// reply leaves through the tunnel accept in the output chain. `zc new --tunnel` authors
-	// precisely this shape, so it was the common case that was open.
+	// input (ingress): who may reach the app's published ports. Emitted whenever anything could
+	// arrive - a published or sibling-facing list, ANY link, or a tunnel. Omitting the chain leaves
+	// inbound UNFILTERED, not closed: nftables applies no policy to a hook with no base chain.
 	own := ownLinkIface(cfg)
 	if len(ingress) > 0 || own != "" || len(linkEntries) > 0 || hasTunnel(cfg) {
 		ingressPolicy := chainPolicy(ingress)
 		bld.WriteString("\tchain input {\n")
 		fmt.Fprintf(&bld, "\t\ttype filter hook input priority 0; policy %s;\n", ingressPolicy)
-		// Scoped to genuinely loopback-addressed traffic, NOT to the interface alone. pasta
-		// delivers a connection forwarded from the host's loopback INTO the namespace over lo,
-		// so a bare `iif "lo" accept` took those before the source rules below were ever
-		// consulted - meaning a publish that named one remote /24 was in fact reachable by
-		// every process on the host. Matching the addresses too leaves the app talking to
-		// itself accepted, which is all this rule was ever for, and lets a spliced inbound
-		// connection fall through to the rules that decide about it.
+		// Scoped to loopback ADDRESSES, not the interface: pasta delivers host-forwarded connections into
+		// the namespace over lo, so a bare `iif "lo" accept` made a publish naming one remote /24
+		// reachable by every process on the host.
 		bld.WriteString("\t\tiif \"lo\" ip saddr 127.0.0.0/8 ip daddr 127.0.0.0/8 accept\n")
 		bld.WriteString("\t\tiif \"lo\" ip6 saddr ::1 ip6 daddr ::1 accept\n")
 		bld.WriteString("\t\tct state established,related accept\n")
@@ -495,12 +414,9 @@ func NFTRuleset(cfg schema.AppConfig) string {
 			}
 			bld.WriteString("\t}\n")
 		}
-		// A routed app's resolver is not ours to choose: podman writes resolv.conf and
-		// points it at the network's own DNS, which on an --internal bridge answers sibling
-		// names and forwards nothing (measured: an external name returns NXDOMAIN). Rather
-		// than fight over the file, the query is redirected here, to a resolver the app
-		// reaches through its sibling - so it travels inside the tunnel and stops with it.
-		// dstnat runs before the filter hook, so the rules above then see the new address.
+		// A routed app's resolver is not ours to choose: podman points resolv.conf at the network's DNS,
+		// which on an --internal bridge forwards nothing (measured: NXDOMAIN). The query is redirected
+		// instead. dstnat runs before the filter hook, so the rules above see the new address.
 		if server := dnsRedirect(cfg); server != "" {
 			bld.WriteString("\tchain output {\n")
 			bld.WriteString("\t\ttype nat hook output priority dstnat; policy accept;\n")
@@ -514,15 +430,9 @@ func NFTRuleset(cfg schema.AppConfig) string {
 	return bld.String()
 }
 
-// writeForwardRules emits what a gateway will carry for its siblings: from its own link, out
-// to each interface its routes can send that traffic by, narrowed to ForwardPorts.
-//
-// The two ends of the bound answer different questions and come from different apps. WHERE
-// is the client's: only the CIDRs its Via list names are routed to this gateway at all, and
-// the client cannot change that - the runner installs those routes and the app has no
-// capability to alter them. WHAT is the gateway's, and it is the ports below. This app's own
-// egress rules are deliberately not consulted: they say where THIS app may go, and forwarded
-// traffic is somebody else's.
+// writeForwardRules emits what a gateway carries for its siblings, narrowed to ForwardPorts. This
+// app's own egress rules are deliberately not consulted - forwarded traffic is somebody else's,
+// already bounded by the client's Via routes.
 func writeForwardRules(bld *strings.Builder, cfg schema.AppConfig) {
 	own := ownLinkIface(cfg)
 	if own == "" {
@@ -551,11 +461,8 @@ func forwardPorts(cfg schema.AppConfig) []int {
 	return nil
 }
 
-// forwardExits lists the interfaces forwarded traffic may leave by: this app's own egress
-// bridge, plus every link it routes through as a client of another gateway. The second kind
-// is what lets gateways chain - a hop that passes its clients' traffic onward into a sibling
-// rather than out to the network itself. Without it the forward chain would name only the
-// egress bridge and drop everything the gateway's own Via routes sent to a link.
+// forwardExits lists the interfaces forwarded traffic may leave by: this app's egress bridge plus
+// every link it routes through as a client, which is what lets gateways chain.
 func forwardExits(cfg schema.AppConfig) []string {
 	var exits []string
 	if hasTunnel(cfg) {
@@ -581,14 +488,9 @@ func forwardExits(cfg schema.AppConfig) []string {
 	return exits
 }
 
-// dnsRedirect returns the resolver a routed app's DNS is rewritten to, or "" when the app
-// is not routed. Only a routed app: for an ordinary one the network's resolver works and is
-// the only thing that knows its siblings' names, so redirecting would take that away for
-// nothing. A routed app has already lost it - that resolver cannot answer anything external
-// from an internal bridge - which is why this is a repair rather than a restriction.
-//
-// The first declared server: validation requires a routed app to name one, and one address
-// is what a dnat rule takes.
+// dnsRedirect returns the resolver a routed app's DNS is rewritten to, or "" when not routed. Only
+// a routed app: an ordinary one's network resolver is the only thing that knows sibling names.
+// The first declared server, since a dnat rule takes one address.
 func dnsRedirect(cfg schema.AppConfig) string {
 	if len(cfg.NetworkMeta.DNSServers) == 0 {
 		return ""
@@ -601,12 +503,8 @@ func dnsRedirect(cfg schema.AppConfig) string {
 	return ""
 }
 
-// writeDNSRules permits DNS to the declared resolvers and drops it everywhere else. The
-// drop is the point: without it, naming a resolver would be a suggestion rather than a
-// restriction, and an app is free to ignore what its /etc/resolv.conf says.
-//
-// Emitted only when the app declares resolvers - an app that names none keeps whatever DNS
-// its network gives it, exactly as before.
+// writeDNSRules permits DNS to the declared resolvers and drops it elsewhere - an app is free to
+// ignore its /etc/resolv.conf. Emitted only when the app declares resolvers.
 func writeDNSRules(bld *strings.Builder, servers []string) {
 	if len(servers) == 0 {
 		return
@@ -648,11 +546,8 @@ func verdictFor(netList schema.NetworkList) string {
 	return "accept"
 }
 
-// listRule pairs a list with its position in NetworkMeta.NetworkLists. The index travels
-// this far only because it is what a counter is labelled with, and a number in the readout
-// is worth reading only if it points back at the line of config that produced the rule. The
-// position in the filtered egress/ingress slice is not that line: link lists are dropped on
-// the way here, so the two disagree the moment an app has one.
+// listRule pairs a list with its index in NetworkMeta.NetworkLists, which is what a counter is
+// labelled with. The position in the filtered slice is not that index: link lists are dropped.
 type listRule struct {
 	index   int
 	netList schema.NetworkList
@@ -685,28 +580,13 @@ func allBlacklist(rules []listRule) bool {
 
 // --- counters (section 5.3) ---
 //
-// Every rule that answers a policy question carries a `counter` statement and a comment
-// naming it, so `zcr net <app>` can report what the ruleset has actually seen without
-// rebuilding nft syntax out of `nft -j` output. The comment is the label; the chain and the
-// verdict the readout shows come from the JSON itself.
+// Rules that answer a policy question carry a `counter` and a naming comment, which is what
+// `zcr net <app>` reads back. Counted: every rule a NetworkList produced (labelled with its config
+// index), the DNS deny, and the default-drop backstop. Left bare, because they would bury those:
+// `oif "lo"`, the conntrack accept, the DNS accepts, the forward chain and the nat rules.
 //
-// What is counted is a deliberate subset, because a counter on every rule buries the two
-// numbers worth reading. `oif "lo"` (the app talking to itself) and `ct state
-// established,related` (every packet of every flow already allowed) are between them almost
-// all the traffic and say nothing about policy, so both stay bare. So do the DNS accepts to
-// the resolvers the app declared, the forward chain's accepts (that traffic is a sibling's,
-// and the sibling's own counters already show it leaving) and the nat rules (a rewrite is
-// not a decision to allow or refuse). What is left is exactly the decisions:
-//
-//   - every rule a NetworkList produced, labelled with that list's index in the config, so
-//     "which of my rules is actually being used" has an answer pointing at a line;
-//   - the DNS deny, which is how an app carrying a hardcoded resolver announces itself;
-//   - the default-drop backstop below, which is the whole "what is my sandbox refusing".
-//
-// One consequence is worth knowing before reading a number: the conntrack accept sits above
-// all of these and is bare, so an accept counter counts the packets that OPENED flows, not
-// the traffic those flows carried. That is the more useful reading ("was this rule
-// exercised, and how often"), and it is why the byte column is small.
+// The conntrack accept sits above all of these and is bare, so an accept counter counts the packets
+// that OPENED flows, not the traffic they carried.
 
 // labelPolicy names the trailing rule that makes a chain's default policy countable.
 const labelPolicy = "default policy"
@@ -718,15 +598,9 @@ func counted(verdict, label string) string {
 	return fmt.Sprintf("counter %s comment %q", verdict, label)
 }
 
-// writeBackstop writes a default-drop policy out as an explicit rule, so the number that
-// matters most - what the sandbox is actually refusing - is not permanently zero. nftables
-// counts rules, not policies, and a fail-closed chain refuses by policy, so without this a
-// working lock-down and a broken one both report nothing. The rule changes no behaviour: a
-// packet that reaches the end of the chain was dropped by the policy anyway.
-//
-// Only for a drop policy. On an all-blacklist (default-accept) chain the same line would
-// turn allow-all-except into deny-all - the config silently inverted, which is worse than
-// having no counter at all.
+// writeBackstop writes the default-drop policy out as an explicit rule, because nftables counts
+// rules and not policies - without it the number that matters most is permanently zero. Only for a
+// drop policy: on an all-blacklist chain the same line would invert the config.
 func writeBackstop(bld *strings.Builder, policy string) {
 	if policy != "drop" {
 		return
@@ -754,11 +628,8 @@ func writeRules(bld *strings.Builder, family string, cidrs []string, ports []int
 	}
 }
 
-// writeIngressRules emits input-chain rules for one ingress list: match the app's own
-// published Ports, restricted to the source CIDRs (saddr). Unlike egress, an empty CIDR
-// is legal and means "any source" (validate exempts ingress from the ports-need-CIDR
-// rule), so a list with ports but no CIDR opens those ports to anyone the pod forwards.
-// v4 and v6 source sets are emitted separately so a v4 CIDR never gates v6 traffic.
+// writeIngressRules emits input-chain rules for one ingress list. Unlike egress an empty CIDR is
+// legal and means "any source". v4 and v6 sets are separate so a v4 CIDR never gates v6.
 func writeIngressRules(bld *strings.Builder, rule listRule, verdict string) {
 	netList := rule.netList
 	ports := portList(netList.Ports)
@@ -803,12 +674,10 @@ func portList(ports []int) string {
 	return strings.Join(strs, ", ")
 }
 
-// podCreateArgs builds `podman pod create` for a filtered app's netns. A tier-2 app
-// attaches to its private link bridge(s), each pinned to a fixed interface name the nft
-// rules match (no pasta, no host publish - checkNetwork forbids mixing). Otherwise the
-// pod is a pasta netns: a list naming a host interface makes pasta copy its addressing
-// (first wins), which also scopes tier-3 publishing, and tier-3 (LAN) ingress lists add
-// their ports as `-p` forwards here (pod ports live on the pod, not the container).
+// podCreateArgs builds `podman pod create` for a filtered app's netns. A tier-2 app attaches to its
+// link bridges on fixed interface names the nft rules match; otherwise it is a pasta netns, where a
+// list naming a host interface makes pasta copy its addressing and tier-3 ports become `-p`
+// forwards (pod ports live on the pod, not the container).
 func podCreateArgs(cfg schema.AppConfig, pod string) []string {
 	args := []string{"pod", "create", "--name", pod}
 	// The pod owns the user namespace of everything that joins it: podman refuses --userns on
@@ -833,16 +702,9 @@ func podCreateArgs(cfg schema.AppConfig, pod string) []string {
 		return append(args, publishArgs(cfg)...)
 	}
 
-	// A linked app needs its own egress too when it has non-link lists - a gateway app has
-	// to reach the outside to be worth routing through, and a client that sends only some
-	// destinations through a sibling still goes direct with the rest. pasta cannot do this:
-	// podman refuses outright ("cannot set multiple networks without bridge network mode"),
-	// so such an app is put on a bridge instead.
-	//
-	// Its OWN bridge, not the default one. Apps sharing a bridge can reach each other over
-	// L2, which would leave isolation resting on the nft rules alone - and an app whose
-	// egress list is an all-blacklist runs default-accept, so it would reach every other
-	// app on that bridge. A bridge per app keeps them apart whatever their rules say.
+	// A linked app with non-link lists needs its own egress too, and pasta cannot do this - podman
+	// refuses ("cannot set multiple networks without bridge network mode"). So it gets a bridge, its
+	// OWN: apps sharing one reach each other over L2, and an all-blacklist app runs default-accept.
 	if needsOwnEgress(cfg) {
 		args = append(args, "--network", EgressNetwork(cfg.AppNameID)+":interface_name="+egressIface)
 	}
@@ -884,13 +746,8 @@ func needsOwnEgress(cfg schema.AppConfig) bool {
 	return false
 }
 
-// publishArgs maps tier-3 (LAN) ingress lists - Ingress && Host - onto pod `-p` port
-// forwards so the LAN can reach the app's published ports; the nft input chain then
-// restricts who (source CIDR) actually gets through, and pasta binds the pod's interface
-// (firstInterface). Each port is forwarded for both tcp and udp to match the input
-// chain; there is no host-port remap (published port == container port). Self-scoped
-// ingress (tier 2) publishes nothing to the host and never reaches here - checkNetwork
-// rejects it in this build.
+// publishArgs maps tier-3 ingress lists onto pod `-p` forwards; the nft input chain restricts who
+// gets through. Both tcp and udp per port, no host-port remap.
 func publishArgs(cfg schema.AppConfig) []string {
 	var args []string
 	for _, netList := range cfg.NetworkMeta.NetworkLists {
@@ -922,11 +779,8 @@ func nftApplyArgs(pod, image string) []string {
 	return []string{
 		"run", "--pod", pod, "--rm", "-i", "--pull", "never",
 		"--security-opt", "no-new-privileges", "--cap-drop", "all", "--cap-add", "NET_ADMIN",
-		// --user 0 is root OF THE POD'S user namespace, which is what owns the netns.
-		// Without it a keep-id pod runs this helper as an ordinary uid, and nft cannot
-		// touch the namespace at all ("cache initialization failed: Operation not
-		// permitted"). A no-op for a pod that is not keep-id, where the default already is
-		// that root.
+		// --user 0 is root of the POD'S user namespace, which owns the netns. Without it a keep-id pod runs
+		// this helper as an ordinary uid and nft fails with "cache initialization failed".
 		"--user", "0",
 		image, "nft", "-f", "-",
 	}

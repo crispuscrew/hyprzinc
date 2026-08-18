@@ -1,8 +1,7 @@
-// Package app is the imperative shell of zvr: it sequences a launch (validate, verify the
-// pinned base, build the disk and the seed, compose the command line, start the guest)
-// over the pure argv builder and the adapters. The order matters and is deliberate -
-// nothing is created for an app whose config does not validate, and no guest starts from
-// a base image that no longer matches its digest.
+// Package app is the imperative shell of zvr: it sequences a launch (validate, verify the pinned base,
+// build the disk and seed, compose the command line, start the guest) over the pure argv builder and
+// the adapters. The order is deliberate: nothing is created for a config that does not validate, and
+// no guest starts from a base that no longer matches its digest.
 package app
 
 import (
@@ -130,15 +129,10 @@ func (svc Service) machineLayout(cfg schema.AppConfig, installing, startServices
 	return layout, nil
 }
 
-// guestName screens a name that is about to be joined into a state path. Every command that
-// goes through the store already gets this from the store's own guard, but Stop and Reset
-// take the argument straight from argv - and filepath.Join CLEANS `..` segments away rather
-// than refusing them, so an unchecked name reaches outside the state directory entirely.
-//
-// Reset is the one that makes this urgent: it deletes an overlay, a seed ISO, a UEFI
-// variable store and, recursively, a TPM state directory. Unchecked, that is a delete
-// primitive pointed at any path the user can write, reported as success for an app that was
-// never defined. Stop is the same shape aimed at a pidfile.
+// guestName screens a name about to be joined into a state path. Commands going through the store get
+// this from the store's guard, but Stop and Reset take the argument straight from argv - and
+// filepath.Join CLEANS `..` away rather than refusing it. Reset makes it urgent: it deletes an
+// overlay, a seed, a variable store and, recursively, a TPM state directory.
 func guestName(name string) error {
 	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
 		return fmt.Errorf("invalid app name %q", name)
@@ -175,12 +169,9 @@ func (svc Service) Reset(name string) error {
 	if state.Alive {
 		return fmt.Errorf("%s is running; stop it before resetting its disk", name)
 	}
-	// Everything the guest accumulated, not just its disk. UEFI variables and TPM state are
-	// as much "what this guest became" as the filesystem is: leaving them would return a
-	// freshly installed disk to a firmware still holding boot entries for the old one, and
-	// a TPM holding keys sealed to a machine state that no longer exists. The next run
-	// re-seeds both - the firmware from the variables the install left beside the base
-	// image, so a reset lands exactly where the install did.
+	// Everything the guest accumulated, not just its disk: UEFI variables and TPM state are as much what
+	// this guest became. Leaving them would return a fresh disk to a firmware holding boot entries for the
+	// old one. The next run re-seeds both from what the install left beside the base image.
 	for _, path := range []string{
 		svc.Paths.Overlay(name),
 		svc.Paths.Seed(name),
@@ -212,12 +203,10 @@ func (svc Service) layout(cfg schema.AppConfig) qemu.Layout {
 	return svc.Paths.Layout(cfg.AppNameID, needsProvisioningDisc(cfg.VirtualizationMeta))
 }
 
-// needsProvisioningDisc reports whether this guest has anything to read off the disc. A
-// cloud-init guest reads its identity from it. A guest on the compatible device profile
-// reads zinc-setup.cmd from it, which is the only way Zinc can hand such a guest a driver -
-// so turning cloud-init off, which a Windows guest reasonably would, must not take the
-// script away with it. One predicate for both the build and the attach: two would drift into
-// building a disc nobody mounts, or attaching one nobody built.
+// needsProvisioningDisc reports whether this guest has anything to read off the disc: identity for a
+// cloud-init guest, zinc-setup.cmd for a compatible-profile one - so turning cloud-init off, which a
+// Windows guest reasonably would, must not take the script with it. One predicate for both the build
+// and the attach, or they drift.
 func needsProvisioningDisc(virt schema.VirtualizationMeta) bool {
 	return !virt.CloudInit.Disabled || virt.Devices == schema.VMDevicesCompatible
 }

@@ -1,11 +1,8 @@
 package options
 
-// HostOptions carries the host-side values a launch needs - Wayland/runtime
-// sockets, the theme bundle, the terminal emulator, the netfilter image, and the
-// container-side home. They are passed explicitly so the argv-building adapters
-// never read the environment themselves and stay pure/testable. Empty fields
-// disable the corresponding wiring. The host adapter (adapters/host) resolves these
-// from the environment; tests and dry-runs construct them directly.
+// HostOptions carries the host-side values a launch needs. Passed explicitly so the argv-building
+// adapters never read the environment and stay pure. Empty fields disable the matching wiring;
+// adapters/host resolves these from the environment.
 type HostOptions struct {
 	RuntimeDir     string // host XDG_RUNTIME_DIR (wayland/pipewire sockets)
 	WaylandDisplay string // host WAYLAND_DISPLAY, e.g. "wayland-1"
@@ -24,13 +21,9 @@ type HostOptions struct {
 	// app never does. Empty disables DBusMeta wiring, which fails the launch of an app that
 	// asked for a bus rather than starting it without one.
 	SessionBusPath string
-	// WaylandSocket is the host path of the Wayland socket to bind-mount into the app: the
-	// per-instance one a wp_security_context_v1 was attached to (section 5.2). Empty means
-	// mount the compositor's own socket, which is what an app that opted out gets and what
-	// everything gets on a compositor that does not implement the protocol.
-	//
-	// It is the one field here that is a RESULT rather than a fact about the host: the launch
-	// path fills it in per app, after the context has actually been created, so an argv can
-	// never claim a socket that was never made.
+	// WaylandSocket is the host path of the Wayland socket to bind-mount in: the per-instance one a
+	// wp_security_context_v1 was attached to (section 5.2). Empty means the compositor's own socket. The
+	// one field here that is a RESULT rather than a host fact - filled in after the context exists, so an
+	// argv can never claim a socket that was never made.
 	WaylandSocket string
 }

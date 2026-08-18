@@ -18,11 +18,9 @@ import (
 // one wrong reading and nothing else in the output prevents it.
 const countersNote = "counters live in the pod's netns and are created with it: these are since this launch, not lifetime totals"
 
-// postureFiltered / postureIsolated are the two network postures a running app can be in.
-// Not "filtered" and "unfiltered": an app with no NetworkLists gets --network none, which is
-// the MOST restricted posture there is, and calling it unfiltered would read as the least.
-// What it does not have is a netns of its own and therefore a ruleset - which is why it is
-// listed separately rather than shown with an empty counter table.
+// postureFiltered / postureIsolated are the two postures a running app can be in. Not "unfiltered":
+// an app with no NetworkLists gets --network none, the MOST restricted posture there is. What it
+// lacks is a netns of its own and therefore a ruleset.
 const (
 	postureFiltered = "filtered"
 	postureIsolated = "isolated"
@@ -45,13 +43,10 @@ type netReport struct {
 	Counters []netenforce.RuleCounter `json:"counters"`
 }
 
-// cmdNet answers the two questions a desktop shell asks about an app's network, and they are
-// close enough to be one verb: which running apps have a locked netns (no argument), and
-// what has one app's ruleset actually counted (an argument).
-//
-// One command rather than two because the second is a drill-down into a row of the first,
-// and because the pair shares everything that is easy to get wrong - resolving a runtime name
-// back to an "app@instance" address, and refusing to describe an isolated app as though it
+// cmdNet answers both questions a desktop shell asks about an app's network: which running apps have
+// a locked netns (no argument), and what one app's ruleset has counted (an argument). One verb
+// because the second is a drill-down into a row of the first, and the pair shares what is easy to get
+// wrong - resolving a runtime name back to an address, and not describing an isolated app as if it
 // had a ruleset.
 func cmdNet(svc app.Service, opt options.HostOptions, argv []string) error {
 	var name string
@@ -175,13 +170,10 @@ func printReport(report netReport) error {
 	return table.Flush()
 }
 
-// netEntries lists the network posture of every running app, sorted by address.
-//
-// It enumerates what is RUNNING (the same view `zcr ps` reports) rather than what is
-// defined, because a netns exists only while its pod does. Anything running that is not a
-// defined app is skipped: `podman ps` also holds Zinc's own D-Bus proxies and whatever else
-// the user runs, and printing a stranger's container with a posture beside it would be
-// claiming a guarantee about something Zinc does not manage.
+// netEntries lists the posture of every running app, sorted by address. It enumerates what is RUNNING
+// rather than what is defined, because a netns exists only while its pod does. Anything running that
+// is not a defined app is skipped: `podman ps` also holds Zinc's own proxies and whatever else the
+// user runs.
 func netEntries(svc app.Service) ([]netEntry, error) {
 	defined, err := svc.List()
 	if err != nil {
@@ -228,15 +220,10 @@ func entryFor(addr paths.Address, runtime string, filtered bool) netEntry {
 	return entry
 }
 
-// addressOf maps a runtime object name back to the address a person types, and reports
-// whether it names a defined app at all.
-//
-// It is the inverse of paths.Address.Runtime, and it needs the defined set to do it: the
-// runtime form joins app and instance with a dot, but an app name may itself contain one
-// (the validator allows [a-z0-9._-]), so "media.server" is either an app or an instance of
-// one and splitting alone cannot say which. An exact match wins - that app exists, so the
-// name is its own - and otherwise the part before the LAST dot must be a defined app, since
-// an instance name may not contain a dot.
+// addressOf is the inverse of paths.Address.Runtime, and it needs the defined set: the runtime form
+// joins app and instance with a dot and an app name may contain one, so "media.server" is either an
+// app or an instance of one. An exact match wins; otherwise the part before the LAST dot must be a
+// defined app, since an instance name may not contain a dot.
 func addressOf(runtime string, defined []string) (paths.Address, bool) {
 	known := make(map[string]bool, len(defined))
 	for _, name := range defined {

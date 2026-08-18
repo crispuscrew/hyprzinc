@@ -1,9 +1,7 @@
-// Package firmware prepares the two host-side pieces a Windows-class guest needs before
-// qemu starts: a per-app copy of the UEFI variable store, and a running TPM 2.0 emulator.
-//
-// Both are per-app on purpose. UEFI keeps boot entries in its variable store, and a TPM
-// holds keys the guest believes are sealed to its own machine; sharing either between
-// guests would let one app's state - or secrets - land in another.
+// Package firmware prepares the two host-side pieces a Windows-class guest needs before qemu
+// starts: a per-app copy of the UEFI variable store, and a running TPM 2.0 emulator. Per-app
+// because a variable store holds boot entries and a TPM holds keys the guest believes are sealed
+// to its own machine.
 package firmware
 
 import (
@@ -23,18 +21,13 @@ import (
 )
 
 // An OVMF build on the host. Secure Boot needs the matching pair: the code half carries the
-// signature database, so a secboot VARS with plain CODE boots into an unusable state rather
-// than a secured one.
+// signature database, so a secboot VARS with plain CODE boots unusable rather than secured.
 //
-// tpm records whether the build hands an attached TPM over to the guest, and it is the whole
-// reason this is a table of builds rather than a list of paths. Distributions ship two
-// generations side by side: a current 4 MB build, and a legacy 2 MB build kept for machines
-// created before the variable store grew. Only the 4 MB build carries the TPM (Tcg2) driver.
-// QEMU publishes the TPM's ACPI device by itself, so a guest on the legacy build still
-// enumerates it and still binds a driver to it - it just never gets a working TPM behind it.
-// Windows 11 reads version 0 from that and refuses to install, reporting only that the PC
-// does not meet its requirements. Measured on Fedora 43 with edk2-ovmf 20260508: the 2 MB
-// build reports TPMVersion 0 and a hard block, the 4 MB build reports 2 and no issue.
+// tpm is why this is a table rather than a list of paths. Distributions ship a current 4 MB build
+// and a legacy 2 MB one, and only the 4 MB build carries the Tcg2 driver. QEMU publishes the TPM's
+// ACPI device regardless, so a legacy-build guest binds a driver to nothing: Windows 11 reads
+// version 0 and refuses to install, blaming its requirements. Measured on Fedora 43 with edk2-ovmf
+// 20260508.
 type ovmfBuild struct {
 	code, vars string
 	format     string // pflash image format: the 4 MB Fedora build is qcow2, the rest raw
@@ -59,15 +52,11 @@ var ovmfSecbootSearch = []ovmfBuild{
 	{"/usr/share/OVMF/OVMF_CODE.secboot.fd", "/usr/share/OVMF/OVMF_VARS.secboot.fd", "raw", false},
 }
 
-// Prepare resolves the firmware for an app, copying the variable store on first use. The
-// copy is what makes the guest's boot configuration persistent and its own.
+// Prepare resolves the firmware for an app, copying the variable store on first use.
 //
-// baseImage matters more than it looks. An OS installed under UEFI records its boot entry
-// in NVRAM, not only on disk - Windows Setup writes a "Windows Boot Manager" entry pointing
-// at bootmgfw.efi. `zvr install` leaves those variables beside the disk it produced, so
-// when an app is first run against that disk its variable store is seeded from them.
-// Copying the pristine OVMF template instead would throw the boot entry away and leave a
-// freshly installed guest sitting at the UEFI shell with no bootable device.
+// baseImage matters: an OS installed under UEFI records its boot entry in NVRAM, not on disk, so
+// the store `zvr install` leaves beside its disk is what seeds the app. Copying the pristine OVMF
+// template instead would leave a freshly installed guest at the UEFI shell with no boot device.
 func Prepare(virt schema.VirtualizationMeta, varsPath, baseImage string) (qemu.Firmware, error) {
 	if virt.Firmware != schema.VMFirmwareUEFI {
 		return qemu.Firmware{}, nil
@@ -107,22 +96,17 @@ func Prepare(virt schema.VirtualizationMeta, varsPath, baseImage string) (qemu.F
 			return qemu.Firmware{}, err
 		}
 		if installed := InstalledVars(baseImage); installed != "" && installed != varsPath {
-			// Adopting the store that sits beside the base image is what carries a Windows
-			// install's boot entry across into the app. It is also the one input here that
-			// nothing pins: BaseDigest covers the disk, not this file, and the pair is
-			// exactly what `zvr install` produces, so shipping both together is the expected
-			// shape of a bundle. Check what can be checked before adopting it.
+			// Adopting the store beside the base image is what carries a Windows install's boot entry across.
+			// It is also the one input nothing pins - BaseDigest covers the disk, not this file - so check
+			// what can be checked before adopting it.
 			if err := matchesBuild(installed, build.vars); err != nil {
 				return qemu.Firmware{}, fmt.Errorf("the variable store beside %s cannot be used: %w", baseImage, err)
 			}
 			if virt.SecureBoot {
-				// A store carries PK, KEK and db, which together ARE the Secure Boot policy.
-				// Adopting an unverified one and then booting the secboot firmware over it
-				// means the config says Secure Boot while the guest enforces whatever that
-				// file says, including nothing at all if it has no PK (setup mode). The
-				// benign version needs no attacker: install without --secure-boot, author the
-				// app with SecureBoot: true, and this is what happens. Refuse rather than
-				// report a Secure Boot state that is not the one being enforced.
+				// A store carries PK, KEK and db, which together ARE the Secure Boot policy. Adopting an unverified
+				// one means the config says Secure Boot while the guest enforces whatever the file says, including
+				// nothing at all if it has no PK. No attacker needed: install without --secure-boot, then author
+				// the app with SecureBoot: true.
 				return qemu.Firmware{}, fmt.Errorf(
 					"SecureBoot is set, but the variable store beside %s would be adopted as this app's firmware state.\n"+
 						"that file holds PK/KEK/db, so it decides what Secure Boot actually enforces, and nothing pins it "+
@@ -146,12 +130,9 @@ func Prepare(virt schema.VirtualizationMeta, varsPath, baseImage string) (qemu.F
 	return qemu.Firmware{CodePath: build.code, VarsPath: varsPath, Format: build.format}, nil
 }
 
-// matchesBuild rejects a variable store that belongs to a different OVMF build. The two
-// generations disagree on both format and size - 2 MB code pairs with a 128 KiB store, 4 MB
-// code with a 512 KiB one - and qemu handed a mismatched pair does not fail cleanly: it warns
-// about the size and boots into a guest whose Secure Boot state is quietly wrong. A store
-// written before this host gained the 4 MB build is exactly that case, so it is named and
-// refused instead.
+// matchesBuild rejects a store belonging to a different OVMF build. The generations disagree on
+// format and size (2 MB code pairs with a 128 KiB store, 4 MB with 512 KiB), and qemu handed a
+// mismatched pair warns and boots a guest whose Secure Boot state is quietly wrong.
 func matchesBuild(varsPath, template string) error {
 	haveFormat, haveSize, err := pflashShape(varsPath)
 	if err != nil {
@@ -235,11 +216,9 @@ func StartTPM(stateDir, socketPath, pidPath string) (*TPM, error) {
 	// sockets do.
 	_ = os.Remove(socketPath)
 
-	// The socket qemu is given must be swtpm's CONTROL channel, not its data channel.
-	// qemu's tpmdev emulator speaks the control protocol over that chardev and swtpm hands
-	// back the data channel through it. Pointed at --server instead, qemu connects, sends a
-	// control request and blocks forever on a reply the data channel will never send - it
-	// never even reaches the point of opening its window.
+	// The socket qemu is given must be swtpm's CONTROL channel, not its data channel: qemu's tpmdev
+	// speaks the control protocol and swtpm hands the data channel back through it. Pointed at
+	// --server, qemu blocks forever on a reply that never comes and never opens its window.
 	command := exec.Command("swtpm", "socket",
 		"--tpmstate", "dir="+stateDir,
 		"--ctrl", "type=unixio,path="+socketPath,
@@ -285,12 +264,9 @@ func isSwtpm(pid int) bool {
 	if err != nil {
 		return false
 	}
-	// /proc cmdline is NUL-separated, so compare argv ELEMENTS rather than searching the
-	// joined blob. This is the same rule isGuestProcess applies, and this function's comment
-	// already claimed to apply it while doing a substring search: any process whose command
-	// line merely mentions "swtpm" matched, which after pid reuse means SIGTERM to an
-	// unrelated process. An editor open on the app's TPM state directory, a grep, or a build
-	// log is enough to contain the word. Require it to be the program actually running.
+	// /proc cmdline is NUL-separated, so compare argv ELEMENTS rather than searching the joined blob:
+	// a substring search matches any process merely mentioning "swtpm" - an editor, a grep, a build
+	// log - which after pid reuse means SIGTERM to something unrelated.
 	argv := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
 	if len(argv) == 0 {
 		return false

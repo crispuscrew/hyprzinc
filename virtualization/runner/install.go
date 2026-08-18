@@ -15,16 +15,12 @@ import (
 	"github.com/crispuscrew/zinc/virtualization/runner/domain/qemu"
 )
 
-// `zvr install` produces a base disk by running an OS installer, for guests that have no
-// cloud image to start from - Windows above all.
+// `zvr install` produces a base disk by running an OS installer, for guests with no cloud image to
+// start from - Windows above all.
 //
-// It deliberately takes flags rather than an app name. An app config pins its base image by
-// digest, and a disk that does not exist yet has no digest, so requiring one here would be
-// a chicken-and-egg: you could not author the app until the disk existed, and could not
-// create the disk without the app. Install first, pin the result, then author the app
-// against it. That also keeps the rule that a pinned base is never written to intact -
-// installation is how the base comes into being, not something done to a base that already
-// has one.
+// It takes flags rather than an app name deliberately: an app pins its base by digest, and a disk
+// that does not exist yet has no digest. Install first, pin the result, then author the app. That
+// also keeps intact the rule that a pinned base is never written to.
 const installUsage = `usage: zvr install --disk PATH --media ISO [--media ISO]... [options]
 
   --disk PATH        the disk to install onto; created if missing
@@ -50,19 +46,13 @@ func (list *mediaList) Set(value string) error {
 	return nil
 }
 
-// checkQemuPath screens a path that becomes a qemu -drive property.
+// checkQemuPath screens a path that becomes a qemu -drive property. `zvr install` builds its config by
+// hand and never calls validate.Validate, and this is the one path that BOOTS from the medium.
 //
-// `zvr install` builds its config by hand and never calls validate.Validate, so the rules
-// the validator applies to VirtualizationMeta.Image and InstallMedia do not reach these
-// flags. That gap matters more here than in a config, not less: install is the one path that
-// BOOTS from the medium, and it writes to --disk directly.
-//
-// A comma is the whole problem. qemu separates -drive properties with commas and resolves a
-// duplicate key to the LAST one, so a path containing ",file=/elsewhere" does not stay a
-// path: it appends a second file= that replaces the one just approved. A directory named
-// "Win11.iso,file=/home/u/.ssh" inside an unpacked "install kit" is enough, since the Stat
-// above succeeds on the literal string. The basename also lands in the QMP and serial socket
-// paths, where the tail after a comma is parsed as chardev options.
+// A comma is the whole problem: qemu separates -drive properties with commas and resolves a duplicate
+// key to the LAST one, so a path containing ",file=/elsewhere" appends a second file= that replaces
+// the approved one. A directory named "Win11.iso,file=/home/u/.ssh" is enough, since Stat succeeds on
+// the literal string. The basename also lands in the QMP and serial socket paths.
 func checkQemuPath(flagName, path string) error {
 	switch {
 	case strings.ContainsAny(path, ",:"):
@@ -112,15 +102,10 @@ func cmdInstall(argv []string) error {
 		}
 	}
 
-	// The enums are read straight into the config below, and an unrecognised value is not an
-	// error anywhere downstream: firmware.Prepare treats anything that is not UEFI as "no
-	// firmware", and the machine builder treats anything that is not Compatible as virtio.
-	// So `--firmware uefi --secure-boot` (lowercase, the natural typing) would produce a
-	// SeaBIOS machine with no Secure Boot, while still emitting the smm and pflash options
-	// that make the command line look like Secure Boot. In a config these are hard errors;
-	// they have to be hard errors here too, for the same reason --resolution is checked
-	// above: a flag that looks accepted and changes nothing is the trap this project
-	// refuses elsewhere.
+	// The enums are read straight into the config below, and an unrecognised value is not an error
+	// downstream: firmware.Prepare treats anything not UEFI as "no firmware", and the machine builder
+	// treats anything not Compatible as virtio. So `--firmware uefi --secure-boot` (the natural typing)
+	// would produce a SeaBIOS machine with no Secure Boot while still emitting the smm and pflash options.
 	switch schema.VMFirmware(*firmwareKind) {
 	case schema.VMFirmwareBIOS, schema.VMFirmwareUEFI:
 	default:

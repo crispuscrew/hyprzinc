@@ -1,9 +1,7 @@
-// Package thumbs is an asynchronous, caching thumbnail store for the menu's grid layout. A
-// wallpaper directory can hold hundreds of multi-megabyte photos, so decoding them on the
-// render path would freeze the overlay. Instead Get returns a cached thumbnail if it is ready
-// and otherwise schedules a bounded background decode and returns nil (the caller draws a
-// placeholder tile); the menu's frame loop polls Pending/TakeDirty and redraws as thumbnails
-// land. Decoding is pure Go (internal/imgutil), so the whole thing stays cgo-free and static.
+// Package thumbs is an asynchronous, caching thumbnail store for the menu's grid layout: decoding a
+// directory of multi-megabyte photos on the render path would freeze the overlay. Get returns a
+// cached thumbnail or schedules a bounded background decode and returns nil; the frame loop polls
+// Pending/TakeDirty. Decoding is pure Go, so this stays cgo-free and static.
 package thumbs
 
 import (
@@ -17,11 +15,9 @@ const (
 	// maxThumbBytes caps how much of a source file is read. Wallpapers are large, so this is
 	// far more generous than the icon cap, but still bounds a hostile or corrupt file.
 	maxThumbBytes = 64 << 20
-	// maxThumbDecoded is the memory one decode may allocate. It fits every plausible wallpaper -
-	// an 8K photograph decodes to about 132 MiB, a 4K one at 16 bits per channel to about 66 -
-	// while refusing a file crafted to be enormous once decoded rather than OOM-ing on it. It is
-	// a byte budget rather than a pixel count because pixels do not bound memory: the same
-	// dimensions cost 8x more as 16-bit-per-channel than as a paletted image.
+	// maxThumbDecoded is the memory one decode may allocate: an 8K photograph decodes to about 132 MiB.
+	// A byte budget rather than a pixel count, because the same dimensions cost 8x more at 16 bits per
+	// channel than as a paletted image.
 	maxThumbDecoded = 160 << 20
 	// maxInFlight bounds concurrent decodes so a big grid cannot spawn hundreds of goroutines
 	// each holding a full decoded image. With the budget above it also sets the ceiling on the
@@ -54,11 +50,9 @@ func New(boxW, boxH int) *Store {
 	}
 }
 
-// Get returns the thumbnail for path when it is decoded, or nil when it is not yet ready. On
-// the first call for a path it schedules a background decode; a path that failed to decode
-// caches nil and is never rescheduled (Get keeps returning nil for it). The bool reports
-// whether the decode has been attempted (true even when the result is nil), which callers can
-// use to distinguish "still loading" from "loaded, but no image".
+// Get returns the thumbnail for path, or nil when it is not ready, scheduling a decode on the first
+// call. A path that failed to decode caches nil and is never rescheduled. The bool reports whether
+// the decode has been attempted, which distinguishes "still loading" from "loaded, but no image".
 func (store *Store) Get(path string) (*image.RGBA, bool) {
 	if path == "" || store == nil {
 		return nil, true
@@ -101,22 +95,17 @@ func (store *Store) Pending() bool {
 	return len(store.inflight) > 0
 }
 
-// Active reports whether there is still thumbnail work to observe: a decode in flight, or a
-// finished one that has not been drawn yet. It is the condition for keeping the caller's poll
-// running, and it must be one atomic read - decode publishes the thumbnail, clears inflight,
-// and sets dirty in a single critical section, so querying "pending" and "dirty" separately
-// lets a decode land in the gap and strand a finished thumbnail with nothing left to draw it.
+// Active reports whether any thumbnail work is left to observe: a decode in flight, or a finished one
+// not yet drawn. One atomic read, because decode publishes, clears inflight and sets dirty in a
+// single critical section - querying separately lets a decode land in the gap and strand its result.
 func (store *Store) Active() bool {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	return store.dirty || len(store.inflight) > 0
 }
 
-// TakeDirty reports whether any decode has completed since the previous call, clearing the
-// flag, and whether any decode is still in flight. Both are read under one lock for the reason
-// in Active: consulting them one after the other can lose the last thumbnail. The caller
-// redraws when dirty is set so newly-decoded thumbnails appear, and keeps polling while
-// pending is set.
+// TakeDirty reports whether a decode has completed since the last call, clearing the flag, and
+// whether any is still in flight. Both under one lock, for the reason in Active.
 func (store *Store) TakeDirty() (dirty, pending bool) {
 	store.mu.Lock()
 	defer store.mu.Unlock()

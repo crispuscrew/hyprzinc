@@ -8,12 +8,9 @@ import (
 	"github.com/crispuscrew/zinc/common/domain/schema"
 )
 
-// The VM rules. They are stricter than they strictly need to be in one specific way: a
-// field this build does not implement for a VM app is an ERROR rather than something
-// quietly ignored. A config whose Capabilities or NetworkLists look configured but do
-// nothing is worse than one that refuses to save, because the author believes a boundary
-// exists that is not there. This mirrors how the container network model rejects what it
-// cannot enforce instead of half-applying it.
+// The VM rules. Stricter than strictly necessary in one way: a field this build does not implement for
+// a VM app is an ERROR rather than quietly ignored, because a config whose Capabilities look
+// configured but do nothing is worse than one that refuses to save.
 
 // fileDigestRE is a bare sha256 pin: "sha256:" + 64 hex, anchored at both ends. Unlike
 // digestRE (which matches the @sha256:... tail of a container reference) this pins a
@@ -139,13 +136,9 @@ func checkInstallMedia(index int, media string, add addFunc) {
 	case hasUnsafe(media):
 		add("VirtualizationMeta.InstallMedia[%d] %q: must be a single-line path (no whitespace or control characters)", index, media)
 	case strings.ContainsRune(media, ','):
-		// A comma separates qemu's -drive properties, so it does not stay inside the path:
-		// it appends options to the drive. qemu resolves a duplicate key to the LAST one, so
-		// a second file= in the tail replaces the absolute path this check just approved,
-		// and qemu will happily open a URL. `zvr install` boots from this medium, which
-		// would make the boot disk remote, mutable and unauthenticated - exactly what
-		// BaseDigest exists to prevent for the main disk. The container side has refused
-		// ',' in mount paths since 0.1 for the same reason.
+		// A comma separates qemu's -drive properties, so it does not stay inside the path: qemu resolves a
+		// duplicate key to the LAST one, so a second file= in the tail replaces the absolute path just
+		// approved, and qemu will happily open a URL. `zvr install` boots from this medium.
 		add("VirtualizationMeta.InstallMedia[%d] %q: must not contain ',' - it separates qemu's -drive properties, so a comma appends options to the drive rather than staying in the path", index, media)
 	case !filepath.IsAbs(media):
 		add("VirtualizationMeta.InstallMedia[%d] %q: must be an absolute path", index, media)
@@ -254,14 +247,9 @@ func checkVirtualizationUnset(cfg schema.AppConfig, add addFunc) {
 		schema.ZincVirtualization, cfg.Type)
 }
 
-// checkResolution screens a fixed guest screen size. Both dimensions or neither: a width with
-// no height cannot be turned into a mode, and supplying the missing half would be inventing a
-// screen the author did not ask for.
-//
-// A guest with no display driver takes its resolution from the firmware at boot and keeps it,
-// and the device that carries one has no VGA compatibility - a BIOS guest given it produces no
-// picture at all. That is why the pairing is refused here rather than discovered as a blank
-// window.
+// checkResolution screens a fixed guest screen size. Both dimensions or neither: supplying the missing
+// half would invent a screen the author did not ask for. It also requires UEFI, because the device
+// that carries a fixed mode has no VGA compatibility and a BIOS guest given it shows no picture.
 func checkResolution(virt schema.VirtualizationMeta, add addFunc) {
 	width, height := virt.DisplayWidth, virt.DisplayHeight
 	if width == 0 && height == 0 {

@@ -16,15 +16,11 @@ import (
 // nameRE: podman object-name charset (lowercase [a-z0-9._-], starts alphanumeric).
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
-// digestRE: canonical sha256 pin (@sha256: + 64 hex). Anchored at BOTH ends - a short or
-// fake digest must not smuggle extra FROM-line directives (section 5.5), and without a head
-// anchor the reference only had to END in something digest-shaped, so
-// "-v/:/host@sha256:<64 hex>" passed as a pinned image and reached podman in the one argv
-// slot that is a bare positional, where pflag reads a leading '-' as a flag.
-//
-// A registry port is part of an ordinary reference, so ":<digits>" is allowed after the host
-// and nowhere else: registry.example.com:5000/team/app@sha256:... has to keep working. A colon
-// there cannot reintroduce the flag problem, which the head anchor already settles.
+// digestRE: canonical sha256 pin (@sha256: + 64 hex), anchored at BOTH ends. Without a head anchor the
+// reference only had to END in something digest-shaped, so "-v/:/host@sha256:<64 hex>" passed as a
+// pinned image and reached podman in a bare positional slot, where pflag reads a leading '-' as a
+// flag. A registry port is part of an ordinary reference, so ":<digits>" is allowed after the host and
+// nowhere else.
 var digestRE = regexp.MustCompile(
 	`^[a-zA-Z0-9][a-zA-Z0-9._-]*(:[0-9]+)?(/[a-zA-Z0-9._-]+)*@sha256:[0-9a-f]{64}$`)
 
@@ -89,14 +85,11 @@ func LocalImage(image string) bool {
 	return strings.HasPrefix(image, "localhost/")
 }
 
-// AppName screens an app name on its own, without validating the rest of a config.
-//
-// It exists for the commands that act on an app that is ALREADY running - stop, restart,
-// logs, inspect, where, net. Those have to keep working for a config the current build would
-// reject, or an upgrade that tightens a rule (a schema bump included) leaves every running app
-// unstoppable except with raw podman. What they still cannot tolerate is an unchecked name:
-// this value becomes a container name, a pod name and a path segment inside an `rm -rf`, so
-// "--all" or "../.." here is the difference between removing one app and removing all of them.
+// AppName screens an app name without validating the rest of a config, for the commands acting on an
+// app that is ALREADY running. Those must keep working for a config this build would reject, or a
+// tightened rule leaves every running app unstoppable except with raw podman. What they cannot
+// tolerate is an unchecked name: it becomes a container name, a pod name and a path segment inside an
+// `rm -rf`, so "--all" or "../.." is the difference between removing one app and all of them.
 func AppName(name string) error {
 	if !nameRE.MatchString(name) {
 		return fmt.Errorf("AppNameID %q: must be lowercase [a-z0-9._-] starting with a letter or digit", name)

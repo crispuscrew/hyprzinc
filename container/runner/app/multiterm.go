@@ -1,19 +1,13 @@
 package app
 
-// Multiterminal apps (docs/architecture.md section 9.1). A multiterminal app runs as a
-// detached "holder" container (HolderCmd as PID 1) so it outlives any single
-// terminal; each terminal is a `podman exec -it` session into it, wrapped in the
-// configured emulator. The app lives until the LAST terminal closes - unless it is
-// also StopConditions.Background, which keeps the holder running.
+// Multiterminal apps (docs section 9.1). A multiterminal app runs as a detached "holder" container
+// so it outlives any single terminal; each terminal is a `podman exec -it` into it. The app lives
+// until the LAST terminal closes, unless StopConditions.Background keeps the holder running.
 //
-// Coordination is by filesystem flock, with no central daemon or socket: each
-// terminal is its own detached waiter process. A per-app coordination lock serializes
-// holder start-up and the liveness bookkeeping; each waiter holds an flock on its own
-// marker file for its lifetime (auto-released on death, so a killed terminal cannot
-// wedge the count). The last waiter to exit stops the container.
-//
-// The waiter's three actions (start the holder, run the terminal, stop) are injected
-// so the flock/ref-count logic is testable without podman, an emulator, or a TTY.
+// Coordination is by filesystem flock, with no daemon: each terminal is its own detached waiter
+// holding an flock on its marker file, auto-released on death so a killed terminal cannot wedge the
+// count. The last waiter out stops the container. The waiter's three actions are injected, so the
+// ref-count logic is testable without podman or a TTY.
 
 import (
 	"errors"
@@ -34,12 +28,9 @@ import (
 // command. /bin/sh is present in any real terminal app image (section 9.1 honesty note).
 const defaultShell = "/bin/sh"
 
-// OpenTerminal spawns one more terminal for a multiterminal app. It builds the derived
-// image if needed, then launches a detached waiter (`<this-binary> __term <name>
-// [--shell]`, in its own session) and returns immediately. The first terminal also
-// starts the holder; subsequent ones attach. shell selects a plain shell over the
-// app's own command. It validates up front so the UI reports common errors
-// synchronously instead of in a silent detached process.
+// OpenTerminal spawns one more terminal: it builds the derived image if needed, launches a detached
+// waiter in its own session, and returns. The first terminal also starts the holder. It validates up
+// front so the UI reports common errors synchronously rather than in a silent detached process.
 func (svc Service) OpenTerminal(cfg schema.AppConfig, opt options.HostOptions, shell bool) error {
 	if err := validate.Validate(cfg); err != nil {
 		return fmt.Errorf("%s: %w", cfg.AppNameID, err)

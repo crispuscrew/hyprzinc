@@ -7,27 +7,21 @@ import (
 	"github.com/crispuscrew/zinc/common/domain/schema"
 )
 
-// busNameRE is one D-Bus well-known name: two or more dot-separated elements, each starting
-// with a letter, underscore or hyphen and continuing in [A-Za-z0-9_-]. Anchored, and the
-// charset is deliberately narrow: these names are passed to xdg-dbus-proxy as --talk/--own
-// arguments, so a name carrying a space or its own "--" would splice an extra option into
-// the very filter the app is confined by (the section 5.5 argument-shifting concern, applied
-// to the bus).
+// busNameRE is one D-Bus well-known name: two or more dot-separated elements, each starting with a
+// letter, underscore or hyphen. Anchored, and deliberately narrow: these are passed to
+// xdg-dbus-proxy as --talk/--own arguments, so a name carrying a space or its own "--" would splice
+// an option into the filter confining the app (section 5.5, applied to the bus).
 var busNameRE = regexp.MustCompile(`^[A-Za-z_-][A-Za-z0-9_-]*(\.[A-Za-z_-][A-Za-z0-9_-]*)+$`)
 
 // maxBusName is the bus-name length cap from the D-Bus specification.
 const maxBusName = 255
 
-// checkDBus screens DBusMeta. An empty block is the fail-closed default (no bus at all) and
-// has nothing to check, so the rules below only apply once an app has asked for bus access.
+// checkDBus screens DBusMeta. An empty block is the fail-closed default and has nothing to check.
 //
-// The KeepUserID requirement is the one non-obvious rule. A filtered bus is an agreement
-// about uid: xdg-dbus-proxy serves the socket as the invoking host user, and an app in a
-// different user namespace cannot connect to it - the failure surfaces inside the app as a
-// bare "connection refused", with nothing pointing at the namespace as the cause. Zinc could
-// silently switch the app to keep-id to make it work, but that would change who the app runs
-// as on the strength of an unrelated field, so the config is refused instead and says which
-// key to set.
+// The KeepUserID requirement is the non-obvious rule: xdg-dbus-proxy serves the socket as the
+// invoking host user, and an app in another user namespace cannot connect - surfacing inside the app
+// as a bare "connection refused". Zinc refuses the config and names the key rather than silently
+// changing who the app runs as on the strength of an unrelated field.
 func checkDBus(cfg schema.AppConfig, add addFunc) {
 	bus := cfg.DBusMeta
 	if bus.IsZero() {
@@ -66,23 +60,18 @@ func checkBusName(field string, index int, name string, allowWildcard bool, add 
 	case !busNameRE.MatchString(base):
 		add("DBusMeta.%s[%d]: %q is not a well-known bus name - two or more dot-separated elements of [A-Za-z0-9_-], no element starting with a digit", field, index, name)
 	case wildcard && strings.Count(base, ".") < 2:
-		// A wildcard grants the whole subtree under its base, including services that appear
-		// there later. With a two-element base that subtree is an entire vendor namespace:
-		// "org.freedesktop.*" covers org.freedesktop.systemd1, whose StartTransientUnit runs
-		// an arbitrary command as the user OUTSIDE the container, plus org.freedesktop.secrets
-		// (the keyring) and every portal. One tidy-looking line, and the sandbox is gone. A
-		// wildcard has to name something more specific than a vendor prefix.
+		// A wildcard grants the whole subtree, including services that appear there later. With a two-element
+		// base that is an entire vendor namespace: "org.freedesktop.*" covers systemd1, whose
+		// StartTransientUnit runs an arbitrary command as the user OUTSIDE the container, plus the keyring
+		// and every portal. So a wildcard must name something more specific than a vendor prefix.
 		add("DBusMeta.%s[%d]: %q grants an entire vendor namespace - a wildcard must name at least three elements before the '*' (org.freedesktop.portal.*, not org.freedesktop.*), because the subtree includes services that appear under it later and org.freedesktop.systemd1 alone is a way out of the sandbox", field, index, name)
 	}
 }
 
-// escapeNames are bus services that hand a caller code execution outside the container. A
-// grant naming one is legal and is occasionally what someone means, but it is not something
-// a reviewer should have to recognise on sight, so it is said out loud at authoring time.
-//
-// The list is short on purpose: only names where the escape is the service's advertised
-// purpose. It is a prompt, not a boundary. The boundary is that a wildcard cannot be broad
-// enough to sweep these up by accident (see checkBusName).
+// escapeNames are bus services that hand a caller code execution outside the container. Naming one is
+// legal and occasionally meant, but it is said out loud at authoring time. Short on purpose: only
+// names where the escape is the service's advertised purpose. A prompt, not a boundary - the boundary
+// is that no wildcard can sweep these up by accident (see checkBusName).
 var escapeNames = map[string]string{
 	"org.freedesktop.systemd1":                    "StartTransientUnit runs an arbitrary command as the user, outside the container",
 	"org.freedesktop.Flatpak":                     "Spawn runs an arbitrary command on the host",
@@ -129,11 +118,9 @@ var wellKnownOwners = map[string]struct{}{
 	"org.freedesktop.impl.portal.Access": {},
 }
 
-// checkSourceTag screens ImageMeta.SourceTag. It is provenance rather than something a launch
-// acts on, but it is handed to a registry client when someone asks whether the pin is stale,
-// so it gets the same treatment as any other reference: no whitespace or control characters
-// that could shift an argument, and a digest is refused because a tag that is already a digest
-// records nothing - re-resolving it would return itself and report "never stale" forever.
+// checkSourceTag screens SourceTag. It is provenance, but it is handed to a registry client on a
+// staleness check, so it gets the same treatment as any reference: no whitespace or control
+// characters. A digest is refused because re-resolving one returns itself and reports "never stale".
 func checkSourceTag(tag string, add addFunc) {
 	trimmed := strings.TrimSpace(tag)
 	switch {

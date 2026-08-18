@@ -1,21 +1,10 @@
-// Package dbusproxy is the D-Bus adapter: it implements ports.DBusBroker by running
-// xdg-dbus-proxy in a container Zinc owns, so an app with DBusMeta gets a session bus
-// carrying only the names its config named (docs/architecture.md section 5.7).
+// Package dbusproxy is the D-Bus adapter: it implements ports.DBusBroker by running xdg-dbus-proxy
+// in a container Zinc owns, so an app with DBusMeta gets a bus carrying only the names it named
+// (section 5.7).
 //
-// The shape is the same one the egress lock-down uses: the dangerous thing is established
-// outside the app and the app is handed only the filtered result. Two properties are load
-// bearing, and both are about what the app can reach rather than what it is allowed to call.
-//
-// The proxy is NOT in the app's pod. A pod shares the PID namespace, so a proxy inside it
-// would be a process the app could signal or ptrace - the filter and the thing being
-// filtered, in one blast radius. It is a standalone container instead, and shares with the
-// app exactly one thing: the socket, through a bind mount.
-//
-// The app never receives the real bus socket. Only the proxy mounts it, read-write because a
-// bus client must write to connect, and the app's mount is the proxy's own socket.
-//
-// Everything here is argv-building and therefore pure and testable; the Runtime executes
-// what this returns.
+// Two properties are load bearing. The proxy is NOT in the app's pod - a pod shares the PID
+// namespace, so the app could signal or ptrace what filters it. And the app never receives the real
+// bus socket, only the proxy's own. Everything here is argv-building, so it is pure and testable.
 package dbusproxy
 
 import (
@@ -52,16 +41,9 @@ const ctrAppSocket = "/run/zinc-bus/bus"
 // Only those two ever see it; the app does not.
 const ctrRuntimeRoot = "/run/zinc-runtime"
 
-// ctrSocketDir is an app's socket directory as the mkdir/rm helper sees it: the container-side
-// mirror of HostSocketDir, kept here so the two cannot drift into naming different directories.
-//
-// The empty return is a guard, not a code path anyone should reach: this string is the
-// argument to an `rm -rf` in a helper that has the host XDG_RUNTIME_DIR bind-mounted
-// read-write, so a name that walks out of the app's own directory would delete the session's
-// sockets. Validation refuses such a name long before here (nameRE has no '/' and cannot
-// start with '.'), and Teardown skips the step on empty. Prepare does not: an empty operand
-// makes mkdir fail and the launch fail closed, which is the right outcome but is worth knowing
-// is where it comes from.
+// ctrSocketDir is the container-side mirror of HostSocketDir, kept here so the two cannot drift.
+// The empty return is a guard: this string is the operand of an `rm -rf` in a helper with the host
+// XDG_RUNTIME_DIR mounted read-write. Teardown skips on empty; Prepare fails the launch closed.
 func ctrSocketDir(app string) string {
 	dir := filepath.Join(ctrRuntimeRoot, "zinc", "dbus", app)
 	if !strings.HasPrefix(dir, ctrRuntimeRoot+"/zinc/dbus/") {
@@ -70,12 +52,8 @@ func ctrSocketDir(app string) string {
 	return dir
 }
 
-// Broker implements ports.DBusBroker. The host facts are held rather than passed per call,
-// so Teardown is reachable from Stop, which knows an app config and nothing about the host.
-//
-//   - Image: the helper carrying xdg-dbus-proxy; empty means DefaultImage.
-//   - RuntimeDir: host XDG_RUNTIME_DIR, the parent of every app's socket directory.
-//   - SessionBusPath: the real session bus socket. Only the proxy ever sees it.
+// Broker implements ports.DBusBroker. The host facts are held rather than passed per call, so
+// Teardown is reachable from Stop, which knows an app config and nothing about the host.
 type Broker struct {
 	Image          string
 	RuntimeDir     string
@@ -104,13 +82,9 @@ const proxyPrefix = "zinc-dbus-"
 // collide with an app's and is recoverable from the app name alone at teardown.
 func ContainerName(app string) string { return proxyPrefix + app }
 
-// AppOfProxy is ContainerName run backwards: the app (runtime) name a proxy container was
-// named for, and whether the container is a Zinc proxy at all.
-//
-// This is the load-bearing half of bus attribution. Zinc named this container when it
-// created it, from an app it had already resolved, so reading the name back yields the app
-// that proxy serves without asking the app anything - which is the whole point, since an app
-// asserting its own identity on the bus is exactly what cannot be trusted.
+// AppOfProxy is ContainerName run backwards: the app a proxy container was named for. The
+// load-bearing half of bus attribution - Zinc named it from an app it had already resolved, so
+// nothing here asks the app who it is.
 func AppOfProxy(container string) (string, bool) {
 	app, found := strings.CutPrefix(container, proxyPrefix)
 	if !found || app == "" {
@@ -155,12 +129,8 @@ func (brk Broker) RunFlags(cfg schema.AppConfig) []string {
 	}
 }
 
-// Prepare creates the app's socket directory and starts the proxy. It runs before the app, so
-// the socket exists by the time the app looks for it.
-//
-// A missing host bus is an error rather than a silent skip: the app asked for bus access, and
-// starting it with no bus at all would surface as the app being broken in a way that points
-// nowhere near the config.
+// Prepare creates the app's socket directory and starts the proxy, before the app. A missing host
+// bus is an error rather than a silent skip: the app asked for bus access.
 func (brk Broker) Prepare(cfg schema.AppConfig) ([]ports.Command, error) {
 	if cfg.DBusMeta.IsZero() {
 		return nil, nil
@@ -173,16 +143,10 @@ func (brk Broker) Prepare(cfg schema.AppConfig) ([]ports.Command, error) {
 		return nil, fmt.Errorf("%s: DBusMeta asked for a filtered session bus, but no host session bus could be resolved - set DBUS_SESSION_BUS_ADDRESS to a unix:path= address", cfg.AppNameID)
 	}
 
-	// The socket directory is created by a helper-image container rather than by this process,
-	// because Prepare is also what Plan renders for a dry run: doing the mkdir here as a syscall
-	// would mean `zcr run` without --exec left directories behind, and would leave a launch step
-	// invisible in the plan the user is shown.
-	//
-	// The mount is XDG_RUNTIME_DIR itself, not the app's directory or its parent, because on a
-	// first launch neither exists and podman cannot bind-mount a source that is not there.
-	// Mounting the runtime dir is broader than this step needs, and what makes it acceptable is
-	// narrow: our own vetted image, one `mkdir -p`, no capability, no network, and it exits. The
-	// APP never gets this mount - it receives only its own socket.
+	// The mkdir runs in a helper container rather than as a syscall here, because Prepare is also what
+	// Plan renders for a dry run. The mount is XDG_RUNTIME_DIR itself, since on a first launch the
+	// app's own directory does not exist yet and podman cannot bind-mount a missing source; the helper
+	// does one `mkdir -p` with no capability and no network, and the APP never gets this mount.
 	steps := []ports.Command{{
 		Args: []string{
 			"run", "--rm", "--pull", "never",
@@ -202,12 +166,9 @@ func (brk Broker) Prepare(cfg schema.AppConfig) ([]ports.Command, error) {
 		Desc: "create bus socket dir for " + cfg.AppNameID,
 	}}
 
-	// The proxy itself: detached, holding the real bus, serving the filtered one. --cap-drop
-	// all and no-new-privileges apply to the proxy as much as to the app - it is a helper Zinc
-	// runs, not a trusted component, and it needs no capability to relay a socket.
-	//
-	// keep-id is why validation requires it on the app too: the socket is created by this
-	// container as the host uid, and an app in a different user namespace could not connect.
+	// The proxy itself: detached, holding the real bus, serving the filtered one. --cap-drop all
+	// applies to it as much as to the app. keep-id is why validation requires it on the app too: the
+	// socket is created as the host uid, and an app in another user namespace could not connect.
 	proxyArgs := []string{
 		"run", "-d", "--rm", "--pull", "never",
 		// --replace because Zinc owns this name by construction. Without it a proxy left
@@ -229,16 +190,10 @@ func (brk Broker) Prepare(cfg schema.AppConfig) ([]ports.Command, error) {
 	proxyArgs = append(proxyArgs, FilterArgs(cfg.DBusMeta)...)
 	steps = append(steps, ports.Command{Args: proxyArgs, Desc: "start filtered dbus proxy for " + cfg.AppNameID})
 
-	// Then WAIT for it, before the app is allowed to start. `podman run -d` returns when the
-	// container has started, not when xdg-dbus-proxy has bound and begun serving its socket,
-	// so without this the app can reach its first bus call before the socket exists and die
-	// with a bare connection error that points nowhere near the cause. The window is small and
-	// load-dependent, which is the worst kind: it passes on a quiet machine and fails on a busy
-	// one.
-	//
-	// The probe is a real method call rather than a test for the socket file, because the file
-	// appears at bind() and the proxy is only useful once it answers - and an app that starts
-	// between those two points fails exactly as if the file had been missing.
+	// Then WAIT for it. `podman run -d` returns when the container started, not when xdg-dbus-proxy has
+	// bound its socket, and the window is load-dependent: it passes on a quiet machine and fails on a
+	// busy one. The probe is a real method call, since the file appears at bind() and the proxy is only
+	// useful once it answers.
 	steps = append(steps, ports.Command{
 		Args: []string{
 			"run", "--rm", "--pull", "never",
@@ -254,13 +209,8 @@ func (brk Broker) Prepare(cfg schema.AppConfig) ([]ports.Command, error) {
 	return steps, nil
 }
 
-// readyScript polls the filtered socket with a real bus call until it answers, and fails the
-// launch if it never does. Fail-closed: a proxy that never came up must stop the launch, not
-// hand the app a socket nothing is listening on.
-//
-// 100 attempts at 50ms is a five-second ceiling. Long enough for a loaded machine to start a
-// container, short enough that a genuinely broken proxy reports itself instead of hanging a
-// launch the user is waiting on.
+// readyScript polls the filtered socket until it answers, and fails the launch if it never does
+// rather than handing the app a socket nothing is listening on. 100 attempts at 50ms.
 const readyScript = `probe="dbus-send --bus=unix:path=` + ctrProxyDir + `/` + proxySocket + ` --dest=org.freedesktop.DBus --type=method_call --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames"
 for attempt in $(seq 1 100); do
 	if $probe >/dev/null 2>&1; then
@@ -271,13 +221,9 @@ done
 echo "the filtered dbus socket did not begin answering within 5s - the proxy failed to start; check: podman logs zinc-dbus-<app>" >&2
 exit 1`
 
-// FilterArgs renders DBusMeta as xdg-dbus-proxy filter options, Talk before Own. Exported so
-// a test can assert the exact grants a config produces - the thing that decides what the app
-// can reach - without reconstructing the whole launch.
-//
-// --filter is supplied by the caller, not here: it is the switch that makes these grants an
-// allowlist rather than annotations on a fully open bus, so it belongs with the invocation
-// that must not omit it.
+// FilterArgs renders DBusMeta as xdg-dbus-proxy filter options, Talk before Own. Exported so a test
+// can assert the exact grants a config produces. --filter comes from the caller: it is what makes
+// these an allowlist rather than annotations on a fully open bus.
 func FilterArgs(bus schema.DBusMeta) []string {
 	args := make([]string, 0, len(bus.Talk)+len(bus.Own))
 	for _, name := range bus.Talk {
@@ -289,12 +235,9 @@ func FilterArgs(bus schema.DBusMeta) []string {
 	return args
 }
 
-// Teardown removes the proxy and the socket directory. Both, and in this order: the proxy is
-// --rm so it usually removes itself, but "usually" leaves an app that cannot be relaunched
-// because its proxy name is taken, and the directory outlives the proxy either way.
-//
-// `rm -f` rather than `stop`, because this must also clean up after a proxy that already
-// exited, where stop would fail and stop the teardown before the directory was removed.
+// Teardown removes the proxy and then the socket directory. `rm -f` rather than `stop`, so it also
+// cleans up after a proxy that already exited - otherwise the name stays taken and the app cannot
+// be relaunched.
 func (brk Broker) Teardown(cfg schema.AppConfig) []ports.Command {
 	if cfg.DBusMeta.IsZero() {
 		return nil

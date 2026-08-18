@@ -1,12 +1,7 @@
-// Package runner shells out to the `zcr` binary - Zinc's container runtime - so the
-// creator (zc) can run and manage the apps it authors without importing the runner.
-// This is the whole zc/zcr split: zc writes app files and knows nothing about podman;
-// zcr reads those same files and runs them. They meet only at the on-disk format and at
-// this process boundary.
-//
-// zcr is expected on $PATH (it is installed alongside zc). If it is missing, every
-// runtime action here fails with an actionable message, while authoring (new/edit/
-// validate/list) keeps working - those need only the shared library, not the runtime.
+// Package runner shells out to `zcr` so the creator can run the apps it authors without importing the
+// runner. That is the whole zc/zcr split: they meet only at the on-disk format and this process
+// boundary. zcr is expected on $PATH; if it is missing, runtime actions fail with an actionable
+// message while authoring keeps working.
 package runner
 
 import (
@@ -88,17 +83,10 @@ func capture(args ...string) (string, error) {
 	return stdout.String(), nil
 }
 
-// safeName screens a name before it becomes an argument to a runner.
-//
-// zc hands these to another program's command line, so the name has to be a name and not a
-// flag or a path. Two shapes matter. A leading '-' lands in the runner's flag slot rather
-// than its app slot. And a name ending in ".yaml" is read by zcr as a FILESYSTEM PATH,
-// resolved against whatever directory zc happened to be started in, so the store key
-// "notes.yaml" (from a dropped file "notes.yaml.yaml") would run ./notes.yaml - a config
-// that never went through the store and that the TUI never displayed.
-//
-// The launcher has had exactly this guard, with tests, since it shipped. zc drives the same
-// runner from the same kind of list and had neither.
+// safeName screens a name before it becomes an argument to a runner. Two shapes matter: a leading '-'
+// lands in the runner's flag slot, and a name ending in ".yaml" is read by zcr as a FILESYSTEM PATH
+// resolved against zc's working directory - so the store key "notes.yaml" would run ./notes.yaml, a
+// config that never went through the store and that the TUI never displayed.
 func safeName(name string) error {
 	if name == "" {
 		return fmt.Errorf("empty app name")

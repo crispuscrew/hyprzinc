@@ -11,11 +11,9 @@ import (
 // no business being handed to an app through a field labelled Playback or Microphone.
 const alsaRoot = "/dev/snd/"
 
-// checkAudio screens both directions of AudioMeta.
-//
-// The device-list form is the enforceable one: each entry becomes a `--device` argument, so
-// the kernel decides what the app can open. That makes the entries argv, and they get the
-// same treatment as every other value that reaches a command line.
+// checkAudio screens both directions of AudioMeta. The device-list form is the enforceable one - each
+// entry becomes a `--device` argument - which makes the entries argv, and they get the same treatment
+// as every other value reaching a command line.
 func checkAudio(cfg schema.AppConfig, add addFunc) {
 	checkAudioDevice("Playback", cfg.AudioMeta.Playback, add)
 	checkAudioDevice("Microphone", cfg.AudioMeta.Microphone, add)
@@ -65,12 +63,9 @@ func checkAudioDevice(field string, dev schema.AudioDevice, add addFunc) {
 		case hasDotDot(device):
 			add("AudioMeta.%s[%d] %q: must not contain a '..' segment - the node that gets passed should be the node that was reviewed", field, index, device)
 		default:
-			// The field an entry sits in has to mean something. Every named node is passed with
-			// --device, and the runner unions the two lists into one set, so without this a
-			// capture PCM listed under Playback grants a microphone to a config that reads
-			// "output only" - and says nothing, because nothing asked for `default`. The whole
-			// claim about the list form is that it is the enforced one; a label the kernel
-			// never sees is not enforcement.
+			// The field an entry sits in has to mean something. Every named node is passed with --device and the
+			// runner unions the two lists, so without this a capture PCM listed under Playback grants a microphone
+			// to a config that reads "output only". A label the kernel never sees is not enforcement.
 			if capture, known := alsaDirection(device); known {
 				switch {
 				case capture && field == "Playback":
@@ -83,22 +78,16 @@ func checkAudioDevice(field string, dev schema.AudioDevice, add addFunc) {
 	}
 }
 
-// audioWarnings surfaces the gap between what a container config says about audio and what
-// the runtime can currently hold it to.
+// audioWarnings surfaces the gap between what a container config says about audio and what the runtime
+// can hold it to. Two gaps, reported separately because a reader can act on one and not the other.
 //
-// Two separate gaps, reported separately because a reader can act on one and not the other.
+// Direction: `default` mounts the PipeWire socket, which grants capture as well as playback, so
+// `Playback: default` with `Microphone: none` does not stop the app listening.
 //
-// The first is direction. `default` mounts the session's PipeWire socket, and PipeWire grants
-// that client capture as well as playback, so `Playback: default` with `Microphone: none`
-// describes an app that cannot listen and does not stop it listening.
+// Monitor: the socket exposes every sink's `.monitor` source. An app declaring `Monitor: default` is
+// describing what it gets; one saying `none` is making a promise the runtime cannot keep.
 //
-// The second is Monitor. The socket exposes every sink's `.monitor` source, so it also grants
-// "record what every OTHER app is playing". An app that declares `Monitor: default` is simply
-// describing what it gets, and gets no warning; one that says `none` is making a promise the
-// runtime cannot keep, and is told so.
-//
-// Neither caveat applies to a device list. ALSA nodes are the card, not PipeWire's graph, so
-// there are no other applications' streams there to open.
+// Neither applies to a device list: ALSA nodes are the card, not PipeWire's graph.
 func audioWarnings(cfg schema.AppConfig) []string {
 	if cfg.Type != schema.ZincContainer {
 		return nil // a guest gets a codec chosen by the runner, and cannot see the host graph

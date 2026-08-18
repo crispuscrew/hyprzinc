@@ -1,12 +1,6 @@
-// Package wire is the runner's composition root: it assembles the concrete adapters
-// (podman runtime/builder/resolver, the netenforce egress enforcer, the fs store)
-// into a ready-to-use app.Service. It is deliberately the ONE place that imports
-// every adapter, kept out of the domain/ports/app layers so those stay
-// adapter-agnostic - the hexagon's center never names a concrete edge.
-//
-// Front-ends call Service / DefaultService to get a fully wired facade; swapping an
-// adapter (e.g. a future non-pasta egress enforcer) is a one-line change here,
-// nowhere else.
+// Package wire is the runner's composition root: it assembles the concrete adapters into a ready
+// app.Service. Deliberately the ONE place that imports every adapter, so the domain, ports and app
+// layers stay adapter-agnostic. Swapping an adapter is a one-line change here.
 package wire
 
 import (
@@ -20,14 +14,9 @@ import (
 	"github.com/crispuscrew/zinc/container/runner/ports"
 )
 
-// Service wires a given store with the podman adapters, the egress enforcer and the D-Bus
-// broker. Tests pass an in-temp-dir store; production uses DefaultService.
-//
-// The broker is the one adapter built from the host environment here rather than handed the
-// options per call. It has to be: Stop tears down an app's proxy and socket directory, and
-// Stop is given a config and no HostOptions, so the broker must already know where the
-// runtime dir is. host.Options only reads the environment, so calling it here costs nothing
-// and keeps env → options in the one place that owns it.
+// Service wires a given store with the podman adapters, the egress enforcer and the D-Bus broker.
+// The broker is built from the host environment here rather than per call, because Stop is given a
+// config and no HostOptions and still has to tear down the proxy and its socket directory.
 func Service(store ports.Store) app.Service {
 	opt := host.Options()
 	return app.New(store, podman.Runtime{}, podman.Builder{}, podman.Resolver{}, netenforce.Enforcer{},

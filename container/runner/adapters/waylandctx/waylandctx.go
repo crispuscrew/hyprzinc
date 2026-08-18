@@ -1,29 +1,12 @@
-// Package waylandctx is the display adapter: it implements ports.DisplayBroker by giving an
-// app a Wayland socket of its own that the compositor has attached a wp_security_context_v1
-// to, so what the compositor sees is a named, per-instance identity the app cannot forge
-// (docs/architecture.md section 5.2).
+// Package waylandctx is the display adapter: it implements ports.DisplayBroker by giving an app a
+// Wayland socket of its own that the compositor has attached a wp_security_context_v1 to, so the
+// app's identity is fixed before it exists and it has no request that can change it (section 5.2).
 //
-// The shape is the one section 5.3 and section 5.7 use: the privileged act happens outside
-// the app and the app is handed only the result. Zinc connects to the REAL compositor socket,
-// binds a second socket of its own, and asks the compositor to accept connections on that
-// second socket under a security context. The app mounts the second socket and never the
-// compositor's, so its identity is fixed before it exists and there is no request it can send
-// to change it. That is the difference from a label: a label describes a container, this
-// decides what the display server believes about every connection the container makes.
-//
-// Two facts in the protocol are what make the design possible:
-//
-//   - listen_fd must already be bound and listening when create_listener is sent. So the
-//     socket is on disk before the app container is created, which it has to be - it is a
-//     bind-mount source, and podman cannot mount a path that is not there.
-//   - the compositor must keep accepting on listen_fd after the client that created the
-//     context disconnects. So the Wayland connection is a one-shot: opened, used, closed. The
-//     only thing that must outlive it is the write end of close_fd, and holding a pipe for the
-//     app's lifetime is far cheaper than holding a compositor connection.
-//
-// The manager global is deliberately hidden from clients that already have a security context
-// (nesting is a privilege-escalation hole), which is exactly why this has to run outside the
-// sandbox: an app could not do it for itself even if it wanted to.
+// Two protocol facts shape it: listen_fd must be bound and listening before create_listener, so the
+// socket is on disk before the container (it is a bind-mount source); and the compositor keeps
+// accepting after the creating client disconnects, so only close_fd's write end must outlive the
+// one-shot connection. The manager global is hidden from clients that already have a context, so
+// an app could not do this for itself even if it wanted to.
 package waylandctx
 
 import (
@@ -44,29 +27,18 @@ import (
 	"github.com/crispuscrew/zinc/container/runner/ports"
 )
 
-// SandboxEngine is what Zinc calls itself to the compositor. The protocol asks for a
-// reverse-DNS name and keeps a list of well-known engines upstream, which Zinc is not on.
-//
-// It is the repository's own domain rather than a short generic name like "org.zinc" or
-// "zinc" on purpose: the engine name is half of the identity - app_id is only required to be
-// unique per engine - so it has to be a name this project actually holds, and taking a tidy
-// generic one would squat an identifier another project could legitimately register. A name
-// derived from where the code lives cannot collide with anyone.
+// SandboxEngine is what Zinc calls itself to the compositor. The repository's own domain rather
+// than a generic "org.zinc": app_id is only unique per engine, so the name has to be one this
+// project holds.
 const SandboxEngine = "com.github.crispuscrew.zinc"
 
 // HoldCommand is the hidden subcommand that holds a context open. It is here rather than in
 // main so the spawner and the dispatcher cannot disagree about the name.
 const HoldCommand = "__wayland"
 
-// statusFD is the descriptor the holder reports readiness on. The launch has to wait for the
-// socket to exist (it is about to be bind-mounted) and has to learn whether a context was
-// actually created, and a pipe answers both without a file to poll for, a directory to clean
-// up, or a timeout that guesses.
-//
-// The holder's stdio is deliberately NOT wired to the caller's: it is detached and outlives
-// it, so inheriting the caller's stderr would keep a launcher's captured pipe open for the
-// whole life of the app, and the launcher would block in Wait until the app exited. Anything
-// the holder needs to say, it says on this pipe and the caller prints.
+// statusFD is the descriptor the holder reports readiness on: the launch has to know the socket
+// exists and whether a context was created. The holder's stdio is deliberately not the caller's -
+// it is detached and outlives it, and inheriting a launcher's pipe would block it in Wait.
 const statusFD = 3
 
 // readyTimeout bounds the wait for that first line. The holder binds a socket and does two
@@ -90,11 +62,8 @@ func Applies(cfg schema.AppConfig, opt options.HostOptions) bool {
 		strings.TrimSpace(opt.WaylandDisplay) != ""
 }
 
-// SocketDir is the per-instance directory holding this instance's own Wayland socket. It
-// mirrors the D-Bus layout (dbusproxy.HostSocketDir) one level over: same root, same shape,
-// a different middle segment. Per instance rather than per app, because the whole point is
-// that the compositor can tell two instances apart - one shared socket would give them one
-// identity and make instance_id a lie.
+// SocketDir is this instance's own Wayland socket directory, mirroring dbusproxy.HostSocketDir. Per
+// instance, because the point is that the compositor can tell two instances apart.
 func SocketDir(runtimeDir string, addr paths.Address) string {
 	if strings.TrimSpace(runtimeDir) == "" {
 		return ""
@@ -113,21 +82,10 @@ func SocketPath(runtimeDir, display string, addr paths.Address) string {
 	return filepath.Join(dir, filepath.Base(display))
 }
 
-// Establish spawns the holder for this app and waits until it has a socket. The returned path
-// is what the app container mounts; an empty path means "mount the compositor's own socket".
-//
-// Empty is returned for two very different reasons and neither is an error. The app may have
-// opted out (DisplayMeta.DisableSecurityContext). Or the compositor may not implement the
-// protocol - GNOME did not for a long time - and refusing to launch there would make Zinc
-// unusable on a mainstream desktop in exchange for nothing, since the app would have got the
-// raw socket before this existed anyway. That fallback is announced on stderr rather than
-// taken quietly, because it is a real reduction in what the compositor knows and the user is
-// the only one who can decide it is acceptable.
-//
-// Everything else does fail the launch: a socket that cannot be bound, a compositor that
-// cannot be reached, a rejected request. Those are broken environments or bugs, and silently
-// degrading on them would mean the security context is only ever best-effort with no way to
-// tell whether it happened.
+// Establish spawns the holder and waits until it has a socket. The returned path is what the
+// container mounts; empty means "mount the compositor's own socket", either because the app opted
+// out or because the compositor lacks the protocol - announced on stderr, since it is a real
+// reduction in what the compositor knows. Everything else fails the launch.
 func (Broker) Establish(addr paths.Address, cfg schema.AppConfig, opt options.HostOptions) (string, error) {
 	if !Applies(cfg, opt) {
 		return "", nil
@@ -220,16 +178,10 @@ func parseStatus(line string) (socket string, supported bool, err error) {
 	}
 }
 
-// Hold is the body of the hidden `zcr __wayland` subcommand: the process that owns one app's
-// security context for as long as the app runs.
-//
-// It has to be a separate process because `zcr run` detaches and exits, and the context is
-// revoked by closing a descriptor - so something has to still be there holding it. This is the
-// same answer the multiterminal path reached for the same reason (app/multiterm.go): a hidden
-// subcommand re-execing this binary, rather than a daemon.
-//
-// wait is how the holder learns the app is gone; the caller supplies it so this package does
-// not have to know what a container is.
+// Hold is the body of the hidden `zcr __wayland` subcommand: the process owning one app's security
+// context for as long as the app runs, because `zcr run` detaches and the context is revoked by
+// closing a descriptor. wait is supplied by the caller, so this package need not know what a
+// container is.
 func Hold(addr paths.Address, opt options.HostOptions, wait func(name string) error) error {
 	status := os.NewFile(statusFD, "zinc-wayland-status")
 	lis, err := create(addr, opt)
@@ -272,21 +224,10 @@ type listener struct {
 	closeWrite *os.File
 }
 
-// create binds the app's socket, hands it to the compositor under a security context, and
-// keeps only what has to outlive the exchange.
-//
-// The identities are chosen so a desktop can cross-check them rather than take them on faith:
-//
-//   - app_id is the app half of the address. The protocol requires app_id to be the same
-//     string across runs and across instances of one application, which is exactly what an
-//     app name is and exactly what a per-run identifier is not.
-//   - instance_id is the runtime name - the SAME string that names the podman container and
-//     that `zcr where` reports. A random uuid would satisfy the protocol and be useless: the
-//     point for the consumer is that the identity is discoverable, so a compositor holding an
-//     instance_id can find the container, and a person can check that the window claiming to
-//     be an app really belongs to the container Zinc started.
-//   - sandbox_engine is Zinc's own reverse-DNS name (SandboxEngine), which is what makes the
-//     other two unambiguous: the protocol only requires app_id to be unique per engine.
+// create binds the app's socket and hands it to the compositor under a security context. The
+// identities are chosen so a desktop can cross-check them: app_id is the app name (stable across
+// instances, as the protocol requires), instance_id is the runtime name that also names the podman
+// container, and sandbox_engine is what makes the other two unambiguous.
 func create(addr paths.Address, opt options.HostOptions) (*listener, error) {
 	compositor, err := compositorSocket(opt)
 	if err != nil {
@@ -362,13 +303,8 @@ func create(addr paths.Address, opt options.HostOptions) (*listener, error) {
 	return &listener{dir: dir, socket: socket, created: created, closeWrite: closeWrite}, nil
 }
 
-// close revokes the context and takes the socket away.
-//
-// The socket is removed only if it is still the one this holder created. An app stopped and
-// immediately relaunched gets a new holder that binds the same path, and this one is waking up
-// at that exact moment - without the identity check it would delete the new holder's socket
-// and leave an app pointing at nothing. The directory removal is left to fail when a new
-// socket is in it, which is the same guard by another means.
+// close revokes the context and removes the socket, but only if it is still the one this holder
+// created: an app relaunched immediately gets a new holder on the same path.
 func (lis *listener) close() {
 	lis.closeWrite.Close() // hangup on close_fd: the compositor stops accepting new connections
 	if now, err := os.Stat(lis.socket); err == nil && os.SameFile(now, lis.created) {

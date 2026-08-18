@@ -161,13 +161,9 @@ func run(argv []string) error {
 	}
 }
 
-// seedApps are the example definitions `zc init` writes. They are deliberately few and
-// deliberately boring: the job is to give a new user something that runs and something to
-// copy, not to ship a catalogue. Each one demonstrates exactly one thing the schema can do,
-// so an author reading them can tell which line is responsible for which behaviour.
-//
-// The images are alpine, pinned, because an example that pulls a browser on first run is a
-// several-hundred-megabyte surprise; the point is the shape of the file.
+// seedApps are the examples `zc init` writes: deliberately few and boring, each demonstrating one
+// thing the schema can do. The images are alpine, pinned, because an example that pulls a browser
+// on first run is a several-hundred-megabyte surprise.
 var seedApps = []struct {
 	name string
 	yaml string
@@ -220,13 +216,9 @@ Volumes:
 `},
 }
 
-// cmdInit seeds the store. A fresh machine has an empty apps directory and nothing to look
-// at, which makes the first question after installing Zinc "and now what" - this answers it
-// with files rather than documentation.
-//
-// It refuses to overwrite by default and reports what it skipped. Seeding is the kind of
-// command someone runs twice without thinking, and the second run silently replacing an app
-// they had edited is the worst outcome available.
+// cmdInit seeds the store, so a fresh machine answers "and now what" with files rather than
+// documentation. It refuses to overwrite by default and reports what it skipped: this is a command
+// someone runs twice without thinking.
 func cmdInit(svc backend.Service, argv []string) error {
 	force := false
 	for _, arg := range argv {
@@ -377,11 +369,9 @@ func cmdNew(svc backend.Service, argv []string) error {
 			return fmt.Errorf("--dbus-talk/--dbus-own are container-only: a guest cannot take a bind-mounted bus socket")
 		}
 		cfg.DBusMeta = schema.DBusMeta{Talk: splitList(*dbusTalk), Own: splitList(*dbusOwn)}
-		// A filtered bus is a uid agreement with the proxy, and validation refuses the pair
-		// without it, so authoring one without KeepUserID would only ever produce a config
-		// that will not save. Set it here and say so: writing it into the file is visible and
-		// reviewable, which is the part that matters - unlike the runner silently changing who
-		// an app runs as at launch, which is what the validator exists to prevent.
+		// A filtered bus is a uid agreement with the proxy and validation refuses the pair without it, so
+		// authoring one without KeepUserID would only ever produce a config that will not save. Set it here
+		// and write it into the file, where it is reviewable.
 		cfg.InternalUserMeta.KeepUserID = true
 		keepIDImplied = true
 	}
@@ -442,12 +432,9 @@ func cmdNew(svc backend.Service, argv []string) error {
 	return nil
 }
 
-// seedTunnel points the app at a wg-quick config AND authors the egress rule the handshake
-// needs. Setting the path alone would produce an app that cannot work and does not say why:
-// the tunnel is built inside a namespace whose ruleset default-drops, so without a rule
-// permitting UDP to the peer's endpoint the handshake never leaves and the interface sits
-// there carrying nothing. The endpoint is in the file, so there is no reason to make someone
-// copy it across by hand and no reason for the two to be able to disagree.
+// seedTunnel points the app at a wg-quick config AND authors the egress rule the handshake needs.
+// The tunnel is built inside a default-drop namespace, so without a rule permitting UDP to the
+// peer's endpoint the handshake never leaves. The endpoint is in the file already.
 func seedTunnel(cfg *schema.AppConfig, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -721,12 +708,8 @@ func openInEditor(path string) error {
 	return cmd.Run()
 }
 
-// loadApp resolves an app by store name or by file path. An argument containing a path
-// separator or ending in ".yaml" is read directly; otherwise it is looked up in the store.
-// It is the RESOLVED app that comes back: every caller here is asking what an app is
-// (validate it, describe it, hand it to a runtime), not what its own file happens to say.
-// The editing paths use svc.Load, which returns the file as written - that is the one that
-// gets saved back.
+// loadApp resolves an app by store name or file path, and returns the RESOLVED app: every caller
+// here asks what an app IS. The editing paths use svc.Load, which returns the file as written.
 func loadApp(svc backend.Service, arg string) (schema.AppConfig, error) {
 	if strings.Contains(arg, "/") || strings.HasSuffix(arg, ".yaml") {
 		return svc.LoadFileResolved(arg)
@@ -787,14 +770,10 @@ func parseResolution(spec string) (int, int, error) {
 	return width, height, nil
 }
 
-// resolveMac turns --mac into the address to store. "random" is drawn once, here, and the
-// literal result is written into the config: a config that said "random" would draw a new
-// address on every run, and a guest whose NIC changes underneath it loses its DHCP lease and
-// looks to Windows like swapped hardware.
-//
-// The address is locally administered (bit 1 of the first octet) and unicast (bit 0 clear),
-// which is the range set aside for exactly this - it belongs to no vendor, so unlike the
-// default it identifies nothing at all.
+// resolveMac turns --mac into the address to store. "random" is drawn once, here, and the literal
+// result written into the config: a config that said "random" would draw a new address every run,
+// and a guest whose NIC changes loses its DHCP lease and looks like swapped hardware to Windows.
+// The address is locally administered and unicast, so it belongs to no vendor.
 func resolveMac(flag string) (string, error) {
 	if !strings.EqualFold(strings.TrimSpace(flag), "random") {
 		return flag, nil

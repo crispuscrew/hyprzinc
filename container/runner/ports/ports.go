@@ -1,12 +1,7 @@
-// Package ports declares the contracts between the runner's application core (app)
-// and the outside world (adapters/*). It is the hexagon's boundary: the app layer
-// depends only on these interfaces, never on a concrete podman/nft/fs
-// implementation, so a mechanism can be swapped by writing a new adapter - the
-// motivating case being egress enforcement (NetEnforcer), where "not pasta" later is
-// one more adapter, not a cross-cutting edit (docs/architecture.md section 5.3, section 13).
-//
-// ports depends only on pure types - the shared schema (common) and the runner's own
-// HostOptions - and performs no I/O itself.
+// Package ports declares the contracts between the runner's application core and the adapters. The
+// app layer depends only on these interfaces, so a mechanism can be swapped by writing a new
+// adapter - the motivating case being egress enforcement, where "not pasta" later is one more
+// adapter rather than a cross-cutting edit (docs section 5.3, section 13). No I/O here.
 package ports
 
 import (
@@ -80,12 +75,9 @@ type Runtime interface {
 	IsRunning(name string) bool
 	Do(args []string) error            // user-facing passthrough (stop/restart/inspect/logs) with host stdio
 	Running() (map[string]bool, error) // names the runtime reports as running (list view)
-	// PIDs is the host PID of each running container's main process, by container name.
-	// Rootless podman does not remap pids, so these are the numbers other host tools report
-	// for the same processes - which is what makes a container identifiable from outside the
-	// runtime. Bus attribution needs exactly that: the session bus answers
-	// GetConnectionUnixProcessID with a host pid, and this is what turns that pid back into
-	// a container Zinc named.
+	// PIDs is the host PID of each running container's main process. Rootless podman does not remap
+	// pids, so these are the numbers other host tools report - which is what lets bus attribution turn
+	// a GetConnectionUnixProcessID answer back into a container Zinc named.
 	PIDs() (map[string]int, error)
 	Logs(name string, tail int) (string, error) // last N log lines (logs view)
 }
@@ -104,22 +96,15 @@ type ImageResolver interface {
 	Resolve(ref string) (string, error)
 }
 
-// DBusBroker gives an app a filtered session bus (DBusMeta): a socket of its own, served by
-// a proxy Zinc owns, carrying only the names the config named. Adapter:
-// adapters/dbusproxy.
-//
-// It is a sibling of NetEnforcer rather than part of it, and shaped the same way, because it
-// is the same kind of problem: a capability the app must never hold directly, established
-// before the app exists and removed after it dies. The proxy holds the real socket; the app
-// holds only what the proxy chooses to forward. Swapping xdg-dbus-proxy for another
-// mechanism is one more adapter, not a cross-cutting edit.
+// DBusBroker gives an app a filtered session bus (DBusMeta): a socket of its own, served by a proxy
+// Zinc owns. A sibling of NetEnforcer and shaped the same way, because it is the same kind of
+// problem: a capability the app must never hold directly, established before the app exists and
+// removed after it dies. Adapter: adapters/dbusproxy.
 type DBusBroker interface {
-	// RunFlags are the app-container flags that attach the filtered socket: the bind mount
-	// and DBUS_SESSION_BUS_ADDRESS pointing at it. Empty when the app asked for no bus, so
-	// an app without DBusMeta is not handed a bus address that resolves to nothing.
-	// The host-side facts a broker needs (the runtime dir, the real bus path) are given to
-	// the adapter when it is built rather than passed per call, so Teardown stays reachable
-	// from Stop, which knows an app config and nothing about the host.
+	// RunFlags are the flags that attach the filtered socket: the bind mount and
+	// DBUS_SESSION_BUS_ADDRESS. Empty when the app asked for no bus, so it is never handed an address
+	// resolving to nothing. Host-side facts go to the adapter when it is built, not per call, so
+	// Teardown stays reachable from Stop.
 	RunFlags(cfg schema.AppConfig) []string
 	// Prepare returns the steps that create the app's socket directory and start the proxy,
 	// to run BEFORE the app. It can fail: an app that asked for a bus when the host has no
@@ -131,30 +116,19 @@ type DBusBroker interface {
 	Teardown(cfg schema.AppConfig) []Command
 }
 
-// DisplayBroker gives an app a Wayland socket of its own, one the compositor has attached a
-// wp_security_context_v1 to (section 5.2). Adapter: adapters/waylandctx.
-//
-// A sibling of NetEnforcer and DBusBroker, and the same shape for the same reason: the app is
-// handed a derived socket rather than the compositor's own, and what the display server
-// believes about it is decided before it exists. Unlike those two it has no Teardown, because
-// the thing that has to be undone is a descriptor held by a process that watches the app and
-// exits with it - there is nothing left for a Stop to remove.
+// DisplayBroker gives an app a Wayland socket of its own, carrying a wp_security_context_v1
+// (section 5.2). Same shape as the two above. It has no Teardown: what must be undone is a
+// descriptor held by a process that watches the app and exits with it. Adapter: adapters/waylandctx.
 type DisplayBroker interface {
-	// Establish creates the app's socket, registers it with the compositor and returns the
-	// host path to bind-mount. An empty path means "mount the compositor's own socket" and is
-	// not an error: it is the answer both for an app that opted out
-	// (DisplayMeta.DisableSecurityContext) and on a compositor that does not implement the
-	// protocol, where refusing to launch would buy nothing and cost the whole desktop.
-	// Everything else - a socket that cannot be bound, a compositor that cannot be reached, a
-	// rejected request - fails the launch rather than silently degrading it.
+	// Establish creates the socket, registers it with the compositor and returns the path to mount. An
+	// empty path means "mount the compositor's own" and is not an error - it is the answer both for an
+	// app that opted out and on a compositor without the protocol. Everything else fails the launch.
 	Establish(addr paths.Address, cfg schema.AppConfig, opt options.HostOptions) (string, error)
 }
 
-// NetEnforcer establishes and enforces an app's network egress - THE swap point.
-// The one adapter today (adapters/netenforce) drives NetworkLists onto the app's own
-// pasta netns via nft (or --network none when there are no lists). A future
-// mechanism is one more implementation; the app layer is agnostic. Callers gate
-// unsupported configs before invoking it (the app layer's checkNetwork).
+// NetEnforcer establishes and enforces an app's network egress - THE swap point. Today
+// adapters/netenforce drives NetworkLists onto a pasta netns via nft. Callers gate unsupported
+// configs before invoking it (the app layer's checkNetwork).
 type NetEnforcer interface {
 	RunFlags(cfg schema.AppConfig) []string // app container network attach (--pod ... / --network ...)
 	// Prepare returns the steps that establish and LOCK the netns before the app starts.
@@ -165,11 +139,8 @@ type NetEnforcer interface {
 	// than one, because a pod is not the only thing an app can own: the per-app egress
 	// bridge outlives it otherwise, and one podman network accumulates per app that ever ran.
 	Teardown(cfg schema.AppConfig) []Command
-	// Counters returns the command that reads back what the enforcement has actually seen,
-	// and false when this app has nothing to ask (no lists, so no netns of its own). It
-	// belongs on this port rather than beside the runtime because "what did enforcement
-	// do" is part of the mechanism: another NetEnforcer answers it in its own terms, or
-	// says it cannot. The output's format is likewise the adapter's - the app layer passes
-	// it through rather than learning to read one adapter's JSON.
+	// Counters returns the command that reads back what enforcement has seen, and false when this app
+	// has nothing to ask. It belongs on this port because "what did enforcement do" is part of the
+	// mechanism, and the output's format is the adapter's - the app layer passes it through.
 	Counters(cfg schema.AppConfig, opt options.HostOptions) (Command, bool)
 }

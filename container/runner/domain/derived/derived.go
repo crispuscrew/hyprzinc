@@ -1,16 +1,12 @@
 package derived
 
-// Derived images (docs section 5.5, section 9.1). When an app sets ImageMeta.Install, Zinc builds
-// a small derived image - `FROM <ImageMeta.Image>` plus one `RUN <install>` layer -
-// and runs the app from that instead of the bare base. This is the "quick setup"
-// path: take a stock distro image and apt/apk/dnf the program you want, without
-// authoring a Containerfile by hand.
+// Derived images (docs section 5.5, section 9.1). When an app sets ImageMeta.Install, Zinc builds a
+// small derived image - `FROM <ImageMeta.Image>` plus one `RUN` layer - and runs the app from that:
+// the quick-setup path, without hand-authoring a Containerfile. The base is digest-pinned by section
+// 5.5, so the derived image is built from a known one.
 //
-// The base FROM inherits ImageMeta.Image, which section 5.5 forces to be digest-pinned (or
-// a localhost/ local ref), so the derived image is built from a known base. These
-// are pure policy functions: which image runs, what its Containerfile says, and how
-// to tell a fresh build from a stale one. The actual `podman build` is the podman
-// adapter (adapters/podman); the build trigger is the app layer (app).
+// Pure policy: which image runs, what its Containerfile says, and how to tell a fresh build from a
+// stale one. `podman build` itself is the podman adapter; the trigger is the app layer.
 
 import (
 	"crypto/sha256"
@@ -47,20 +43,16 @@ func DerivedImageRef(name string) string {
 	return "zinc/app-" + name + ":local"
 }
 
-// DerivedContainerfile renders the Containerfile for an app's derived image: the
-// pinned base plus a single RUN layer carrying the install steps. The install line
-// runs through the image's own /bin/sh (Containerfile shell form), so a distro
-// package-manager invocation works exactly as the user would type it at a shell. It
-// is fed to `podman build` on stdin, so no temp file and no host build context.
+// DerivedContainerfile renders the pinned base plus a single RUN layer. The install line runs through
+// the image's own /bin/sh, so a package-manager invocation works as typed. Fed to `podman build` on
+// stdin, so no temp file and no host build context.
 func DerivedContainerfile(cfg schema.AppConfig) string {
 	return "FROM " + cfg.ImageMeta.Image + "\nRUN " + installScript(cfg.ImageMeta.Install) + "\n"
 }
 
-// BuildFingerprint identifies a derived image's inputs - the base image and the
-// install steps. It is written as the BuildLabel value at build time; a launch
-// rebuilds only when the live image's label differs (or the image is missing), so an
-// unchanged app reuses its image and a re-pinned base or edited install takes effect
-// on the next run automatically.
+// BuildFingerprint identifies a derived image's inputs and is written as the BuildLabel value. A
+// launch rebuilds only when the live image's label differs, so a re-pinned base or edited install
+// takes effect on the next run.
 func BuildFingerprint(cfg schema.AppConfig) string {
 	sum := sha256.Sum256([]byte(cfg.ImageMeta.Image + "\n" + installScript(cfg.ImageMeta.Install)))
 	return hex.EncodeToString(sum[:])

@@ -8,24 +8,17 @@ import (
 	"github.com/crispuscrew/zinc/common/domain/schema"
 )
 
-// The parts of a guest's machine that differ by what the guest OS can actually drive. A
-// Linux cloud image boots on BIOS and speaks virtio to everything; Windows 11 refuses to
-// install without UEFI and a TPM, and its installer has drivers for neither a virtio disk
-// nor a virtio NIC - pointed at one it reports finding no drives at all. So these are
-// separate, explicit fields rather than a "Windows" preset: the config says what the
-// machine has, and the guest either drives it or does not.
+// The parts of a guest's machine that differ by what the guest OS can drive. A Linux cloud image
+// boots on BIOS and speaks virtio; Windows 11 needs UEFI and a TPM and has drivers for neither a
+// virtio disk nor a virtio NIC. Separate explicit fields rather than a "Windows" preset: the config
+// says what the machine has, and the guest either drives it or does not.
 
-// identityArgs gives the guest a machine identity of its own. Without -uuid every qemu
-// guest reports the SMBIOS UUID 00000000-0000-0000-0000-000000000000, and the default NIC
-// carries the MAC 52:54:00:12:34:56 - values shared with every other default qemu VM in the
-// world. That is not a cosmetic detail: Windows Autopilot identifies a device by a hash
-// built from exactly these fields, so a freshly installed guest can match a stranger's
-// corporate enrolment and come up at OOBE demanding a sign-in to their tenant, branded with
-// their logo. Observed here: a Windows 11 install landed on an SAP sign-in page.
-//
-// The identity is derived from the app name rather than randomised, so it survives a reset
-// and a reinstall. Windows treats a machine whose UUID changed as different hardware and
-// wants reactivating, which a randomised value would trigger on every boot.
+// identityArgs gives the guest a machine identity of its own. Without -uuid every qemu guest reports
+// the SMBIOS UUID 00000000-0000-0000-0000-000000000000 and the MAC 52:54:00:12:34:56, shared with
+// every other default qemu VM. Windows Autopilot hashes exactly these fields, so a fresh install can
+// match a stranger's corporate enrolment: observed here as a Windows 11 install landing on an SAP
+// sign-in page. Derived from the app name rather than randomised, since Windows treats a changed
+// UUID as new hardware and wants reactivating.
 func identityArgs(appName string) []string {
 	sum := sha256.Sum256([]byte("zinc/vm/" + appName))
 
@@ -41,10 +34,8 @@ func identityArgs(appName string) []string {
 		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16])}
 }
 
-// macFor picks this app's NIC address. An override is used verbatim - validation has already
-// screened it - so an app that must not look like a QEMU guest can present something else.
-// Otherwise the address is derived under 52:54:00, QEMU's own assigned OUI, which keeps it
-// recognisably a virtual machine's while making the host part per-app; the same shape libvirt
+// macFor picks this app's NIC address. An override is used verbatim, validation having screened it.
+// Otherwise derived under 52:54:00, QEMU's own OUI, with a per-app host part - the shape libvirt
 // uses.
 func macFor(appName, override string) string {
 	if override != "" {
@@ -54,24 +45,19 @@ func macFor(appName, override string) string {
 	return fmt.Sprintf("52:54:00:%02x:%02x:%02x", sum[0], sum[1], sum[2])
 }
 
-// compatibleDisplayDevice picks the graphics for a guest with no display driver of its own.
-// Such a guest keeps whatever mode the firmware left it in, so the resolution is decided here
-// and never changes: resizing the window only scales those pixels.
+// compatibleDisplayDevice picks the graphics for a guest with no display driver of its own, which
+// keeps whatever mode the firmware left it in.
 //
-// Plain VGA cannot be told a resolution - it has no xres/yres, and its built-in EDID is
-// 1280x800, which is why an unconfigured guest is always exactly that size. bochs-display
-// takes one and the firmware honours it. virtio-vga and qxl-vga accept the same properties
-// but are no use here, because OVMF drives their VGA-compatible half and settles back to
-// 1280x800.
+// Plain VGA cannot be told a resolution - no xres/yres, and a built-in EDID of 1280x800, which is
+// why an unconfigured guest is always that size. bochs-display takes one and OVMF honours it;
+// virtio-vga and qxl-vga accept the same properties but OVMF drives their VGA half and settles back.
 //
-// The framebuffer size and EDID refresh rate come with the mode, and both are load-bearing:
-// left at the device's defaults a 4K guest has less video memory than its screen needs AND an
-// EDID pixel clock that overflows its own field, and either one alone drops it silently back
-// to 1280x800.
+// The framebuffer size and EDID refresh rate come with the mode and are load-bearing: at the
+// device's defaults a 4K guest has too little video memory AND an overflowing EDID pixel clock,
+// either of which drops it silently back to 1280x800.
 //
-// The cost is that bochs-display has no VGA compatibility at all, so a BIOS guest given it
-// gets no picture. Validation requires UEFI alongside a fixed size; this keeps VGA for
-// everyone who did not ask for one.
+// The cost is that bochs-display has no VGA compatibility, so a BIOS guest given it gets no picture.
+// Validation requires UEFI alongside a fixed size.
 func compatibleDisplayDevice(virt schema.VirtualizationMeta) string {
 	if virt.Firmware != schema.VMFirmwareUEFI {
 		return "VGA,vgamem_mb=64"
@@ -86,12 +72,10 @@ func compatibleDisplayDevice(virt schema.VirtualizationMeta) string {
 		virt.DisplayWidth, virt.DisplayHeight, mode.VideoMemBytes, mode.RefreshMilliHz)
 }
 
-// machineType builds the -machine argument. Secure Boot needs SMM: the firmware keeps its
-// signature database in memory that only System Management Mode may write, and without SMM
-// the variables are not protected, so OVMF runs but does not ENFORCE Secure Boot. The
-// distinction is invisible from the host and decisive in the guest - Windows 11 reports
-// that the PC does not meet its requirements, because as far as it can tell Secure Boot is
-// switched off.
+// machineType builds the -machine argument. Secure Boot needs SMM: the signature database lives in
+// memory only System Management Mode may write, so without it OVMF runs but does not ENFORCE Secure
+// Boot - invisible from the host, and decisive in the guest, where Windows 11 reports the PC does
+// not meet its requirements.
 func machineType(virt schema.VirtualizationMeta) string {
 	machine := "q35,accel=kvm"
 	if virt.SecureBoot {
@@ -122,12 +106,9 @@ type Firmware struct {
 	Format   string // pflash image format, "raw" or "qcow2"; empty means raw
 }
 
-// firmwareArgs attaches OVMF as a pair of pflash drives. The code half is read-only, so a
-// guest cannot rewrite the firmware it booted from.
-//
-// The format is not always raw. Fedora ships its current 4 MB build as a pair of qcow2
-// images and keeps only the legacy 2 MB build as raw .fd files, so the format travels with
-// the paths rather than being assumed.
+// firmwareArgs attaches OVMF as a pair of pflash drives, the code half read-only. The format is not
+// always raw: Fedora ships its 4 MB build as qcow2 and keeps raw .fd only for the legacy 2 MB build,
+// so the format travels with the paths.
 func firmwareArgs(firmware Firmware) []string {
 	if firmware.CodePath == "" {
 		return nil // BIOS: qemu's built-in SeaBIOS needs nothing said about it

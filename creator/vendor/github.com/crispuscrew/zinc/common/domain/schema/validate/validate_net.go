@@ -9,11 +9,10 @@ import (
 	"github.com/crispuscrew/zinc/common/domain/schema"
 )
 
-// checkNetworkList validates one entry (list order = priority, first wins). A list is
-// directional: Ingress=false (default) is an egress rule (Ports = destination ports the
-// app may reach); Ingress=true publishes the app's own listening Ports inbound. Scope:
-// Host=true = host netns (egress) or a host-interface bind (ingress LAN); Host=false +
-// empty AppName = this app (self); Host=false + AppName = a sibling.
+// checkNetworkList validates one entry (list order = priority, first wins). Directional: Ingress=false
+// is egress (Ports = destinations the app may reach), Ingress=true publishes the app's own listeners.
+// Scope: Host=true is the host netns or a host-interface bind; Host=false with no AppName is this app;
+// Host=false with one is a sibling.
 func checkNetworkList(index int, netList schema.NetworkList, add addFunc) {
 	for _, cidr := range netList.IPv4CIDR {
 		if !validCIDR(cidr, false) {
@@ -34,11 +33,9 @@ func checkNetworkList(index int, netList schema.NetworkList, add addFunc) {
 		add("NetworkLists[%d].Interface %q: only [A-Za-z0-9._-] allowed (no commas or spaces)", index, iface)
 	}
 
-	// Egress: a port carve-out attaches to a destination CIDR (nft `daddr ... dport ...`);
-	// ports with no CIDR emit nothing and silently revert to the chain's default policy -
-	// so a blacklist [53,853] with no CIDR silently keeps DNS open. Reject it: name the
-	// destinations (0.0.0.0/0 and/or ::/0 for "everywhere"), or drop the ports. An ingress
-	// list needs no CIDR - its CIDRs are a source allowlist and empty means "any source".
+	// Egress: a port carve-out attaches to a destination CIDR (nft `daddr ... dport ...`), so ports with
+	// no CIDR emit nothing and revert to the chain's default policy - a blacklist [53,853] with no CIDR
+	// silently keeps DNS open. An ingress list needs no CIDR: empty means "any source".
 	if !netList.Ingress && len(netList.Ports) > 0 &&
 		len(netList.IPv4CIDR) == 0 && len(netList.IPv6CIDR) == 0 && len(netList.Domains) == 0 {
 		add("NetworkLists[%d].Ports %s: set without any IPv4CIDR/IPv6CIDR/Domains; an egress port rule needs destinations (use 0.0.0.0/0 and/or ::/0 for all of them)", index, joinPorts(netList.Ports))
@@ -110,13 +107,9 @@ func checkForwarding(index int, netList schema.NetworkList, add addFunc) {
 // another only in case would read as two different rules while behaving as one.
 var domainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$`)
 
-// checkDomains screens a by-name egress allowance, and refuses the shapes where naming a
-// domain would promise something the enforcement cannot deliver.
-//
-// The enforcement is at the IP layer: a domain is resolved at launch and its addresses join
-// this list's allowed set. That is a real allowance and a real restriction, and it is not
-// hostname filtering - which is what makes the refusals below matter rather than being
-// tidiness.
+// checkDomains refuses the shapes where naming a domain would promise something enforcement cannot
+// deliver. Enforcement is at the IP layer - a domain is resolved at launch and its addresses join the
+// allowed set - which is a real allowance and a real restriction, but not hostname filtering.
 func checkDomains(index int, netList schema.NetworkList, add addFunc) {
 	if len(netList.Domains) == 0 {
 		return
@@ -153,15 +146,10 @@ func checkDomains(index int, netList schema.NetworkList, add addFunc) {
 	}
 }
 
-// checkDNS screens the app's resolvers, and requires them where the app cannot otherwise
-// resolve anything.
-//
-// An app routed through a sibling is that case. Its link is an --internal bridge, and the
-// resolver podman puts on one answers sibling names but forwards nothing - measured, an
-// external name comes back NXDOMAIN. So a routed app with no DNSServers cannot resolve at
-// all, and would meet that as every lookup failing rather than as a missing setting. Naming
-// a resolver gives it one reachable through the sibling, so the queries travel inside the
-// tunnel and stop with it.
+// checkDNS requires resolvers where the app cannot otherwise resolve anything. An app routed through a
+// sibling is that case: its --internal bridge resolver answers sibling names and forwards nothing
+// (measured: NXDOMAIN), so without DNSServers it meets this as every lookup failing rather than as a
+// missing setting.
 func checkDNS(netMeta schema.NetworkMeta, add addFunc) {
 	routed := false
 	for _, netList := range netMeta.NetworkLists {

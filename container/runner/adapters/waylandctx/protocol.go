@@ -86,13 +86,9 @@ func request(object uint32, opcode uint16, body []byte) []byte {
 // appendUint32 adds one uint/int/new_id argument. All three are the same on the wire.
 func appendUint32(body []byte, val uint32) []byte { return wire.AppendUint32(body, val) }
 
-// appendString adds one string argument: a uint32 length that INCLUDES the trailing NUL,
-// the bytes, that NUL, then zero padding up to the next 4-byte boundary.
-//
-// The padding is not decoration - the whole message is a sequence of 32-bit words, so an
-// unpadded string shifts every argument after it and the message size stops being a multiple
-// of four. Padding against len(body) is correct because the header is 8 bytes and every
-// other argument is one or more whole words, so a body offset is always word-aligned.
+// appendString adds one string argument: a uint32 length INCLUDING the trailing NUL, the bytes, that
+// NUL, then padding to the next 4-byte boundary. The message is a sequence of 32-bit words, so an
+// unpadded string shifts every argument after it.
 func appendString(body []byte, str string) []byte {
 	body = wire.AppendUint32(body, uint32(len(str)+1))
 	body = append(body, str...)
@@ -257,12 +253,9 @@ func (cli *client) send(msg []byte, fds ...int) error {
 	return err
 }
 
-// next returns the next message, reading from the socket until one is complete.
-//
-// It reads with plain Read rather than ReadMsgUnix, discarding any ancillary data: the only
-// global bound here is the security context manager, which sends no events at all and
-// certainly none carrying descriptors, so there is nothing to receive and a control buffer
-// would only be a thing to get wrong.
+// next reads from the socket until one message is complete. Plain Read rather than ReadMsgUnix: the
+// only global bound here is the security context manager, which sends no events at all, so a control
+// buffer would only be a thing to get wrong.
 func (cli *client) next() (message, error) {
 	for {
 		msg, size, err := nextMessage(cli.buf)
@@ -290,14 +283,10 @@ func (cli *client) next() (message, error) {
 	}
 }
 
-// roundtrip sends wl_display.sync and reads events until the compositor answers it, handing
-// every other event to handle. It is how a request-only protocol is made observable: the
-// requests here produce no replies, so without a sync a protocol error would arrive after
-// this process had already disconnected and be lost entirely.
-//
-// wl_display.error is checked on every event, not only at the end, because it is the answer
-// to the request before it - waiting for the callback that will now never come would turn a
-// precise error into a timeout.
+// roundtrip sends wl_display.sync and reads events until the compositor answers, handing the rest to
+// handle. It is how a request-only protocol is made observable: without a sync a protocol error would
+// arrive after this process had disconnected. wl_display.error is checked on every event, not only at
+// the end, or a precise error becomes a timeout waiting for a callback that will never come.
 func (cli *client) roundtrip(handle func(message) error) error {
 	callback := cli.newID()
 	if err := cli.send(request(displayObject, displaySync, appendUint32(nil, callback))); err != nil {
