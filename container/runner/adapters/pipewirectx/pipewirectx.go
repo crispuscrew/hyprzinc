@@ -108,11 +108,17 @@ func create(addr paths.Address, opt options.HostOptions) (*listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir := SocketDir(opt.RuntimeDir, addr)
+	return createAt(addr, opt.RuntimeDir, daemon)
+}
+
+// createAt is create with the daemon's socket named outright, so a test can point it at a
+// stand-in. Everything that decides what the app is allowed lives below this line.
+func createAt(addr paths.Address, runtimeDir, daemon string) (*listener, error) {
+	dir := SocketDir(runtimeDir, addr)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
-	path := SocketPath(opt.RuntimeDir, addr)
+	path := SocketPath(runtimeDir, addr)
 	// A socket left by a previous run would make Listen fail on a path nothing is serving.
 	_ = os.Remove(path)
 

@@ -76,7 +76,7 @@ func TestE2E(t *testing.T) {
 	if err := os.MkdirAll(apps, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"sleeper", "producer", "consumer", "capped", "slowdep", "waiter"} {
+	for _, name := range []string{"sleeper", "producer", "consumer", "capped", "slowdep", "waiter", "scratch"} {
 		data, err := os.ReadFile(filepath.Join(here, "apps", name+".yaml"))
 		if err != nil {
 			t.Fatal(err)
@@ -286,6 +286,42 @@ func TestE2E(t *testing.T) {
 		} {
 			if !strings.Contains(out, want) {
 				t.Errorf("expected %q in the app's own report of what it was granted", want)
+			}
+		}
+	})
+
+	t.Run("scratch_volumes", func(t *testing.T) {
+		// A Volume with no host path produced no podman argument at all until 0.10.0, so
+		// SizeLimited and SizeLimitMiB were validated and did nothing. The runtime's unit
+		// tests prove the --mount is emitted; only the kernel can say the ceiling holds, so
+		// the app reports its own mount back through the logs the way capped.sh does.
+		must(t, zc, "run", "scratch", "--exec")
+		if !waitFor(func() bool { return running("scratch") }) {
+			t.Fatal("scratch should be running after `zc run --exec`")
+		}
+		defer func() { _, _ = tool(zc, "stop", "scratch") }()
+
+		var out string
+		waitFor(func() bool {
+			out, _ = tool(zc, "logs", "scratch")
+			return strings.Contains(out, "scratch up")
+		})
+		t.Logf("scratch reported:\n%s", out)
+
+		for _, want := range []string{
+			"SCRATCH_FS=tmpfs", // scratch space, not a host path
+			"SCRATCH_MB=8",     // SizeLimitMiB reached the kernel
+			"WROTE_MB=8",       // and it bites: 32 MiB in, 8 MiB written
+			"READONLY=refused", // Writable defaults off, as a bind mount's does
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("expected %q in the app's report of the volume it was given", want)
+			}
+		}
+		// nosuid and nodev always: scratch space is never a place to gain privilege.
+		for _, want := range []string{"nosuid", "nodev", "noexec"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the scratch mount should carry %q: %s", want, out)
 			}
 		}
 	})

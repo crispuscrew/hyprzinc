@@ -64,6 +64,13 @@ func enforce(addr paths.Address, want grant, runtimeDir string, stop <-chan stru
 	if err != nil {
 		return err
 	}
+	return enforceAt(addr, want, path, stop)
+}
+
+// enforceAt is enforce with the socket named outright, so a test can point it at a stand-in
+// daemon. The permission rules below are the ones worth checking, and they do not care which
+// socket carried them.
+func enforceAt(addr paths.Address, want grant, path string, stop <-chan struct{}) error {
 	cnn, err := dial(path)
 	if err != nil {
 		return err
