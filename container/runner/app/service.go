@@ -188,6 +188,12 @@ func (svc Service) launch(cfg schema.AppConfig, opt options.HostOptions, chain [
 	if err := checkNetwork(cfg); err != nil { // fail closed on not-yet-supported network shapes
 		return err
 	}
+	// Serialise this app's launch before asking whether it is already running. The answer is read
+	// from the runtime, which does not show the app until the launch that is creating it finishes,
+	// so without the lock two launches a second apart both pass this check. See launchlock.go.
+	lock := lockLaunch(cfg.AppNameID)
+	defer lock.close()
+
 	// Refuse before preparing anything: the fail-closed teardown cannot tell "already exists" from "I
 	// built this and it is broken", so a second launch of a running app used to tear down the first
 	// one's pod, proxy and sockets. Here rather than in the loop, so it also covers an Exited container.
@@ -235,6 +241,12 @@ func (svc Service) launch(cfg schema.AppConfig, opt options.HostOptions, chain [
 	onFail := func() { _ = svc.teardown(cfg, len(steps) > 0) }
 	if err := svc.runtime.StartApp(cfg, opt, appArgs, onFail); err != nil {
 		return errors.Join(err, svc.teardown(cfg, len(steps) > 0))
+	}
+	// Hand what the launch built to something that outlives this process, or none of it is
+	// removed when the app exits on its own - and the pod left behind fails the next launch,
+	// `podman pod create` having no --replace. Only when there is something to remove.
+	if len(steps) > 0 {
+		svc.superviseAfter(cfg)
 	}
 	return nil
 }

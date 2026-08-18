@@ -178,6 +178,10 @@ func run(argv []string) error {
 		// security context, holds the revocation descriptor, and sets the app's permissions
 		// so the directions its config did not grant stay unreachable.
 		return cmdPipeWireHolder(opt, rest)
+	case "__supervise":
+		// Hidden: the per-app supervisor. It outlives this process, waits for the app's
+		// container to be gone, and tears down what the launch built around it.
+		return cmdSupervise(svc, rest)
 	case notifyfilter.HoldCommand:
 		// Hidden: the per-app notification filter. It serves the socket the app was given and
 		// relays to the D-Bus proxy behind it, rewriting the calls NotificationMeta narrows.
@@ -518,14 +522,28 @@ func cmdWaylandHolder(opt options.HostOptions, argv []string) error {
 	return waylandctx.Hold(addr, opt, podman.WaitGone)
 }
 
+// cmdSupervise is the hidden supervisor. It takes the address so an instanced app resolves, and
+// tears the app down once its container is gone - which is the only thing that does, since every
+// front-end launches through a `zcr` that exits moments later.
+func cmdSupervise(svc app.Service, argv []string) error {
+	if len(argv) != 1 {
+		return fmt.Errorf("usage: zcr __supervise <app[@instance]>")
+	}
+	cfg, err := load(svc, argv[0])
+	if err != nil {
+		return err
+	}
+	return svc.Supervise(cfg, podman.WaitGone)
+}
+
 // cmdNotifyFilter is the hidden notification filter (section 3 NotificationMeta). It takes the
 // app name rather than an address: the filter is per app like its bus and its bundle, because
 // what it enforces is authored content rather than anything an instance carries.
 func cmdNotifyFilter(svc app.Service, opt options.HostOptions, argv []string) error {
 	if len(argv) != 1 {
-		return fmt.Errorf("usage: zcr %s <app>", notifyfilter.HoldCommand)
+		return fmt.Errorf("usage: zcr %s <app[@instance]>", notifyfilter.HoldCommand)
 	}
-	cfg, err := loadApp(svc, argv[0])
+	cfg, err := load(svc, argv[0])
 	if err != nil {
 		return err
 	}

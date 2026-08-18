@@ -94,6 +94,29 @@ were silently ignored, and the audio directions were a claim rather than a contr
   began with `MZ`, which is a corruption check, and the ISO comes from a floating path with no
   digest. The output now says which of the two it did and prints the digest to pin.
 
+### Fixed
+
+- **What a launch builds is torn down when the app exits on its own.** Nothing did it: the
+  reaping goroutine meant to cover it cannot run, since every front-end launches through a `zcr`
+  that exits moments later, and a clean exit was never covered by it at all. A detached
+  supervisor waits for the container to be gone and then removes the pod, the netns, the bridge,
+  the proxy and its socket directory. It defers to a relaunch that got there first, and the
+  teardown is safe to run twice, which `zcr stop` may already have done.
+
+- **A launch is serialised per app.** The already-running refusal reads what the runtime reports,
+  and the app does not appear there until the launch finishes, so two launches a second apart
+  both passed and the second's fail-closed teardown removed the first one's pod and proxy. An
+  flock per app closes it: the second waits, then sees the first running and refuses properly.
+
+- **`zcr term` can fail.** A multiterminal launch does its fail-closed work - the pod, the nft
+  ruleset, the security context, the bus proxy - in a detached process with stdio discarded, so a
+  refused ruleset was reported as a started app. The waiter now reports on a pipe before opening
+  its terminal, and the caller waits for that answer.
+
+- **The notification filter works for an instanced app.** It was spawned with the runtime name
+  (`notes.work`), which the store cannot resolve, so `zcr run notes@work` on an app with a
+  notification policy failed to start. It is given the address, like the other holders.
+
 ### Security
 
 A second audit, aimed at where 0.9.1 did not reach: the VM disk chain, the paths that load a

@@ -93,7 +93,9 @@ func (Broker) Establish(addr paths.Address, cfg schema.AppConfig, opt options.Ho
 	}
 	defer statusRead.Close()
 
-	proc := exec.Command(self, HoldCommand, cfg.AppNameID)
+	// The address, not the runtime name: "notes.work" is not a name the store can resolve, so
+	// an instanced app's filter could never load its own config.
+	proc := exec.Command(self, HoldCommand, addr.String())
 	proc.ExtraFiles = []*os.File{statusWrite}
 	proc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	proc.Stdout, proc.Stderr = nil, nil

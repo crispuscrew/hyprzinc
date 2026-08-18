@@ -10,6 +10,7 @@ package app
 // ref-count logic is testable without podman or a TTY.
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/crispuscrew/zinc/common/domain/schema"
 	"github.com/crispuscrew/zinc/common/domain/schema/validate"
@@ -57,14 +59,67 @@ func (svc Service) OpenTerminal(cfg schema.AppConfig, opt options.HostOptions, s
 	if shell {
 		argv = append(argv, "--shell")
 	}
+	// The waiter reports back before its terminal opens, because everything that can fail closed
+	// happens first: the pod, the nft ruleset, the security context, the bus proxy. Without this
+	// the launch returned as soon as the process forked, so a refused ruleset or a rejected
+	// context was reported as a started app - the one shape this project refuses everywhere else.
+	statusRead, statusWrite, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("%s: readiness pipe for the terminal: %w", cfg.AppNameID, err)
+	}
+	defer statusRead.Close()
+
 	proc := exec.Command(exe, argv...)
+	proc.ExtraFiles = []*os.File{statusWrite} // becomes termStatusFD in the waiter
 	proc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	proc.Stdout, proc.Stderr = nil, nil // detached: don't corrupt the parent's TUI
 	if err := proc.Start(); err != nil {
+		statusWrite.Close()
 		return fmt.Errorf("%s: open terminal: %w", cfg.AppNameID, err)
 	}
 	go proc.Wait() // reap if the caller (long-lived TUI) outlives the waiter
+	// The parent's copy must go, or the read below never sees EOF when the waiter dies without
+	// answering - precisely the case the timeout should not have to cover.
+	statusWrite.Close()
+
+	return readTermStatus(cfg.AppNameID, statusRead)
+}
+
+// termStatusFD is the descriptor the waiter reports on, matching the holders' convention.
+const termStatusFD = 3
+
+// termReadyTimeout bounds the wait. A first terminal has a pod to create, a ruleset to load and a
+// bus proxy to answer; a later one attaches to a holder that is already up.
+const termReadyTimeout = 30 * time.Second
+
+// readTermStatus blocks until the waiter says the app is up, or says why it is not.
+func readTermStatus(app string, pipe *os.File) error {
+	if err := pipe.SetReadDeadline(time.Now().Add(termReadyTimeout)); err != nil {
+		return err
+	}
+	line, err := bufio.NewReader(pipe).ReadString('\n')
+	if err != nil && line == "" {
+		return fmt.Errorf("%s: the terminal reported nothing: %w", app, err)
+	}
+	line = strings.TrimSpace(line)
+	if rest, ok := strings.CutPrefix(line, "error "); ok {
+		return fmt.Errorf("%s: %s", app, rest)
+	}
+	if line != "ok" {
+		return fmt.Errorf("%s: unreadable status from the terminal: %q", app, line)
+	}
 	return nil
+}
+
+// reportTerm answers OpenTerminal's pipe, once. The descriptor is closed straight after, so the
+// caller stops waiting the moment the answer is in rather than when this process exits.
+func reportTerm(line string) {
+	status := os.NewFile(termStatusFD, "status")
+	if status == nil {
+		return
+	}
+	fmt.Fprintln(status, line)
+	status.Close()
 }
 
 // Term is the blocking waiter that runs inside a `__term` process: it ensures the
@@ -88,9 +143,19 @@ func (svc Service) Term(cfg schema.AppConfig, opt options.HostOptions, shell boo
 		return err
 	}
 	wtr := &waiter{
-		runRoot:     root,
-		background:  cfg.StopConditions.Background,
-		ensureUp:    func() error { return svc.ensureHolder(cfg, opt) },
+		runRoot:    root,
+		background: cfg.StopConditions.Background,
+		ensureUp: func() error {
+			// The fail-closed half of a multiterminal launch runs here, in a detached process.
+			// Reporting its outcome is what makes `zcr term` able to fail at all.
+			err := svc.ensureHolder(cfg, opt)
+			if err != nil {
+				reportTerm("error " + err.Error())
+			} else {
+				reportTerm("ok")
+			}
+			return err
+		},
 		runTerminal: func() error { return svc.runTerminalSession(cfg, opt, shell) },
 		stop:        func() error { return svc.Stop(cfg) },
 	}
