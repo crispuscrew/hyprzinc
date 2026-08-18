@@ -33,7 +33,7 @@ func Validate(cfg schema.AppConfig) error {
 	checkContainerImage(cfg.ImageMeta.Image, add)
 	checkResources(cfg.ResourcesMeta, add)
 	checkInternalUser(cfg.InternalUserMeta, add)
-	checkNotifications(cfg.NotificationMeta, add)
+	checkNotifications(cfg, add)
 	checkDBus(cfg, add)
 	checkSourceTag(cfg.ImageMeta.SourceTag, add)
 
@@ -49,19 +49,19 @@ func Validate(cfg schema.AppConfig) error {
 		checkConfig(index, configMount, add)
 	}
 	checkKeys(cfg.Keys, add)
+	checkAudio(cfg, add)
+	checkDisplay(cfg, add)
+	checkEnv(cfg.Env, add)
 	checkCapabilities(cfg.Capabilities, add)
 	checkNetworkCapabilities(cfg, add)
 
 	return errors.Join(errs...)
 }
 
-// checkInstall screens each ImageMeta.Install step. The steps are joined into the one
-// RUN layer of the derived-image Containerfile (FROM ImageMeta.Image + RUN ...), so a
-// control character - above all a newline - would break out of that single RUN line
-// and let a crafted config inject its own Containerfile directives (e.g. a second FROM
-// that swaps the base to an unpinned image, defeating the digest pin while the YAML's
-// Image still looks pinned). A legitimate multi-step setup uses one list entry per
-// step; a single step never needs an embedded newline (section 5.5).
+// checkInstall screens each Install step. They are joined into the one RUN layer of the derived
+// Containerfile, so a control character - above all a newline - would break out of that line and let
+// a config inject its own directives, e.g. a second FROM swapping the base to an unpinned image
+// while the YAML still looks pinned (section 5.5).
 func checkInstall(install []string, add addFunc) {
 	for index, step := range install {
 		if hasControl(step) {
@@ -112,12 +112,9 @@ func checkReadiness(start schema.StartConditions, add addFunc) {
 	}
 }
 
-// checkNetworkCapabilities forbids network-administration capabilities on a filtered
-// app. A filtered app (one with NetworkLists) runs inside the pod whose network
-// namespace carries the nftables egress lock-down; granting CAP_NET_ADMIN (or the
-// superset CAP_SYS_ADMIN) would let the app flush that ruleset at runtime and reach an
-// unfiltered network. Enforcement and app-granted netns control are mutually exclusive
-// by design (section 5.3).
+// checkNetworkCapabilities forbids network-administration capabilities on a filtered app: it runs
+// inside the pod netns carrying the nftables lock-down, so CAP_NET_ADMIN (or CAP_SYS_ADMIN) would
+// let it flush that ruleset at runtime (section 5.3).
 func checkNetworkCapabilities(cfg schema.AppConfig, add addFunc) {
 	if len(cfg.NetworkMeta.NetworkLists) == 0 {
 		return // unfiltered app runs with --network none; NET_ADMIN reaches nothing
@@ -178,10 +175,8 @@ func checkContainerImage(image string, add addFunc) {
 	case strings.TrimSpace(image) == "":
 		add("ImageMeta.Image: must not be empty")
 	case hasUnsafe(image):
-		// Interpolated into a FROM line - must be a single-line ref (section 5.5).
 		add("ImageMeta.Image %q: must be a single-line reference (no whitespace or control characters)", image)
 	case !LocalImage(image) && !digestRE.MatchString(image):
-		// section 5.5: third-party images pinned by canonical digest; only localhost/ may use a mutable tag.
 		add("ImageMeta.Image %q: third-party images must be digest-pinned (...@sha256:<64 hex>); only localhost/ images may use a mutable tag (section 5.5)", image)
 	}
 }
@@ -193,11 +188,9 @@ func checkLifecycle(cfg schema.AppConfig, add addFunc) {
 	case start.Multiterminal && !start.Terminal:
 		add("StartConditions.Multiterminal: requires Terminal (it spawns terminals into a shared container)")
 	case start.Terminal && cfg.StopConditions.Background && !start.Multiterminal:
-		// A foreground terminal app can't also be Background; Multiterminal lifts this.
 		add("StartConditions.Terminal: a terminal app runs in a foreground window; it cannot also be StopConditions.Background (use Multiterminal to keep the shared container alive after the last terminal closes)")
 	}
 	if start.Multiterminal && strings.TrimSpace(start.Entrypoint) == "" && strings.TrimSpace(start.MultiterminalEntrypoint) == "" {
-		// Each terminal re-execs the app, so it needs an explicit command (PID 1 is a holder).
 		add("StartConditions: Multiterminal needs an explicit Entrypoint or MultiterminalEntrypoint (the image default cannot be replayed into each terminal)")
 	}
 }
@@ -216,22 +209,18 @@ func checkResources(res schema.ResourcesMeta, add addFunc) {
 	if res.PIDsLimit < 0 {
 		add("ResourcesMeta.PIDsLimit %d: must be >= 0 (0 = unlimited)", res.PIDsLimit)
 	}
-	// A swap allowance on its own has no meaning to enforce. The runtime tells podman the
-	// TOTAL of memory and swap, because that is the only figure podman takes, and with no
-	// memory limit there is no total to state - podman would either refuse the flag or read
-	// the swap figure as the app's whole memory ceiling, which is the opposite of what
-	// asking for swap means. Naming the missing field beats either.
+	// A swap allowance on its own has nothing to enforce: podman takes only the TOTAL of memory and
+	// swap, so with no memory limit it would either refuse the flag or read the swap figure as the whole
+	// memory ceiling.
 	if res.MaxSwapMiB > 0 && res.MaxRamMiB <= 0 {
 		add("ResourcesMeta.MaxSwapMiB %d: needs MaxRamMiB set too - swap is allowed on top of the memory limit, so without one there is nothing to add it to",
 			res.MaxSwapMiB)
 	}
 }
 
-// checkInternalUser screens who the app runs as. Both halves have to agree: the runtime
-// passes the name to podman, so asking for a non-root user without naming one leaves
-// nothing to pass, and naming one without asking leaves a field that reads as if it were in
-// force. Either way the config would say something the launch does not do, which is the
-// whole reason these fields were worth wiring up.
+// checkInternalUser screens who the app runs as. Both halves must agree: asking for a non-root user
+// without naming one leaves nothing to pass to podman, and naming one without asking leaves a field
+// that reads as if it were in force.
 func checkInternalUser(user schema.InternalUserMeta, add addFunc) {
 	if user.UseNonRootUser && strings.TrimSpace(user.NonRootUserName) == "" {
 		add("InternalUserMeta.UseNonRootUser: set NonRootUserName too - the user is passed to podman by name, and it must exist in the image")
@@ -241,17 +230,57 @@ func checkInternalUser(user schema.InternalUserMeta, add addFunc) {
 	}
 }
 
-// checkNotifications fails closed on a block that is defined and does nothing. Zinc has no
-// notification path yet - nothing proxies, silences or prefixes an app's notifications - so
-// every field here is inert. Silently accepting Silenced would tell an author their app is
-// muted while it notifies freely, and the honest answer for an unimplemented mechanism is to
-// refuse the config rather than mis-enforce it. The zero value stays legal, so an app that
-// never touched the block is unaffected.
-func checkNotifications(notify schema.NotificationMeta, add addFunc) {
+// checkNotifications fails closed on a block that is defined and does nothing: Zinc has no
+// notification path yet, so accepting Silenced would tell an author their app is muted while it
+// notifies freely. The zero value stays legal.
+// checkNotifications screens the notification policy. The zero block is the default and means
+// "whatever the desktop does", which keeps the filter out of the launch entirely.
+func checkNotifications(cfg schema.AppConfig, add addFunc) {
+	notify := cfg.NotificationMeta
 	if notify == (schema.NotificationMeta{}) {
 		return
 	}
-	add("NotificationMeta: not implemented - Zinc does not proxy or filter app notifications yet, so none of these fields would be enforced; leave the block at its defaults")
+	// The filter stands in the app's bus path, so an app with no bus has no way to notify and
+	// nothing for this block to hold it to. Accepting it would be a policy over traffic that
+	// cannot happen, which reads as a control while controlling nothing.
+	if cfg.DBusMeta.IsZero() {
+		add("NotificationMeta: needs a session bus - notifications travel over D-Bus, so an app with an empty DBusMeta cannot send one. Add %q to DBusMeta.Talk, or leave this block at its defaults", notifyBusName)
+	} else if !talksTo(cfg.DBusMeta.Talk, notifyBusName) {
+		add("NotificationMeta: this app is not allowed to reach %s, so nothing it says here applies. Add that name to DBusMeta.Talk, or leave this block at its defaults", notifyBusName)
+	}
+	// Opposites: Disabled refuses the call and tells the app so, Silenced accepts it and drops
+	// it quietly. Setting both is a config that cannot state which answer it wants.
+	if notify.Disabled && notify.Silenced {
+		add("NotificationMeta: Disabled and Silenced are opposites - Disabled refuses the call and the app is told, Silenced accepts it and shows nothing. Pick one")
+	}
+	if notify.UseCustomPrefix && strings.TrimSpace(notify.CustomPrefix) == "" {
+		add("NotificationMeta.CustomPrefix: required when UseCustomPrefix is set")
+	}
+	if !notify.UseCustomPrefix && strings.TrimSpace(notify.CustomPrefix) != "" {
+		add("NotificationMeta.CustomPrefix %q: set UseCustomPrefix to apply it, or clear it - a prefix that is written but not used reads as if it were in force", notify.CustomPrefix)
+	}
+	// The prefix is inserted into a summary the notification server renders, so it gets the
+	// same screening as any other value that leaves this config.
+	if hasControl(notify.CustomPrefix) {
+		add("NotificationMeta.CustomPrefix: must be a single line with no control characters")
+	}
+}
+
+// notifyBusName is the service a notification is sent to.
+const notifyBusName = "org.freedesktop.Notifications"
+
+// talksTo reports whether a Talk list reaches name, wildcards included.
+func talksTo(talk []string, name string) bool {
+	for _, entry := range talk {
+		entry = strings.TrimSpace(entry)
+		if entry == name {
+			return true
+		}
+		if base, ok := strings.CutSuffix(entry, ".*"); ok && strings.HasPrefix(name, base+".") {
+			return true
+		}
+	}
+	return false
 }
 
 // Warnings returns non-fatal create-time advisories (zc); nothing here blocks save or
@@ -268,20 +297,17 @@ func Warnings(cfg schema.AppConfig) []string {
 				"GPU-accelerated Vulkan; the qemu process loses its syscall filter.")
 	}
 	if cfg.Type == schema.ZincVirtualization && virtioGpuOnACompatibleGuest(cfg.VirtualizationMeta) {
-		// Measured on a Windows 11 guest: the firmware paints on a virtio-gpu, and then the
-		// screen goes black the moment the OS takes over, because a guest with no virtio-gpu
-		// driver leaves the device with no active scanout. Nothing errors and nothing is
-		// logged - the window just says the display output is not active. Devices:
-		// Compatible is the app saying this guest has no virtio drivers, so pairing it with
-		// a virtio display is worth a word at authoring time rather than a black screen at
-		// the first boot. Not an error: once the driver IS installed this is the right
-		// machine, and it is how a guest stops being stuck at a fixed screen size.
+		// Measured on a Windows 11 guest: the firmware paints on a virtio-gpu and the screen goes black the
+		// moment the OS takes over, because a guest with no virtio-gpu driver leaves no active scanout.
+		// Nothing errors. Not an error here either: once the driver IS installed this is the right machine.
 		warns = append(warns,
 			"VirtualizationMeta: Display "+string(cfg.VirtualizationMeta.Display)+" gives the guest a virtio-gpu, "+
 				"but Devices: Compatible says the guest has no virtio drivers. Unless one is installed inside it "+
 				"(viogpudo, from the virtio-win disc), the screen goes black as soon as the OS starts. "+
 				"Display: Compatible is the driverless choice.")
 	}
+	warns = append(warns, dbusWarnings(cfg.DBusMeta)...)
+	warns = append(warns, audioWarnings(cfg)...)
 	for index, netList := range cfg.NetworkMeta.NetworkLists {
 		if netList.Ingress {
 			warns = append(warns, ingressWarnings(index, netList)...)

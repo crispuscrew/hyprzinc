@@ -5,7 +5,9 @@
 package disk
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -48,22 +50,17 @@ func EnsureOverlay(base, digest, overlay string, sizeGiB int64) error {
 	return nil
 }
 
-// VerifyBase checks the base image still hashes to the digest the config pins. A base is
-// hashed in full the first time it is used, and after that only when the file looks like
-// it changed - hashing a multi-gigabyte image on every launch would add seconds, or for a
-// large base tens of seconds, to every start.
+// VerifyBase checks the base image still hashes to the digest the config pins. Hashed in full on
+// first use, and after that only when the file looks changed - hashing a multi-gigabyte image on
+// every launch would add seconds to every start.
 //
-// "Looks like it changed" is deliberately broad: the identity recorded is the filesystem's
-// (device, inode), the size, and BOTH timestamps. mtime alone is too weak twice over - it
-// has coarse granularity on some filesystems, so a same-size replacement in the same tick
-// would slip through, and it can be set to anything with utimes. ctime cannot: it moves
-// whenever the inode does, including when someone rewinds mtime.
+// "Looks changed" is deliberately broad: device and inode, size, and BOTH timestamps. mtime alone is
+// too weak twice over - coarse granularity lets a same-size replacement in one tick through, and it
+// can be set to anything with utimes. ctime cannot.
 //
-// What this does and does not buy, plainly: it reliably catches a base that was replaced,
-// rebuilt, moved or restored, which is how a pin actually goes stale. It is not a defence
-// against someone who can already write to the image directory, because they can rewrite
-// this sidecar too. The pin's real strength is that the config names one exact image and
-// zvr refuses to boot anything else.
+// It reliably catches a base that was replaced, rebuilt, moved or restored, which is how a pin goes
+// stale. It is not a defence against someone who can write to the image directory, since they can
+// rewrite this sidecar too.
 func VerifyBase(base, digest string) error {
 	info, err := os.Stat(base)
 	if err != nil {
@@ -71,6 +68,12 @@ func VerifyBase(base, digest string) error {
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("base image %s: not a regular file", base)
+	}
+
+	// Before the digest is even consulted: a base that references another file cannot be
+	// pinned, because the digest covers the reference and not what it resolves to.
+	if err := checkSelfContained(base); err != nil {
+		return err
 	}
 
 	current := identify(info)
@@ -87,6 +90,63 @@ func VerifyBase(base, digest string) error {
 			base, digest, sum)
 	}
 	writeSidecar(base, sidecar{Identity: current, Digest: sum})
+	return nil
+}
+
+// qcow2 header fields this cares about, by byte offset. The layout is fixed and public:
+// magic, then the version, then the offset and length of the backing-file name, and for a
+// version 3 image a feature bitmap whose bit 1 means "the data lives in a separate file".
+const (
+	qcowMagicLen        = 4
+	qcowBackingOffsetAt = 8
+	qcowIncompatibleAt  = 72
+	qcowHeaderProbe     = 80
+	// Bit 2 of incompatible_features (qemu's QCOW2_INCOMPAT_DATA_FILE_BITNR). Bit 1 is the corrupt flag
+	// and is NOT this; getting it wrong silently passes every external-data-file image. Confirmed
+	// against a real image: `qemu-img create -o data_file=x.raw,data_file_raw=on` writes 0x04 at 72.
+	qcowExternalDataBit = 1 << 2
+)
+
+var qcowMagic = []byte{'Q', 'F', 'I', 0xfb}
+
+// checkSelfContained refuses a base image that names another file in its own header. A qcow2 header
+// can carry a backing-file or external-data-file pointer, and those bytes are part of what the
+// digest covers - so a hostile image pins perfectly and still serves whatever the pointer resolves
+// to: any readable file, or a URL, since the nbd and curl drivers are usually compiled in.
+//
+// The rule is definitional rather than an attempt to follow the chain: an image that is not
+// self-contained cannot be pinned. Anything not qcow2 has no such header and passes.
+func checkSelfContained(base string) error {
+	file, err := os.Open(base)
+	if err != nil {
+		return fmt.Errorf("base image %s: %w", base, err)
+	}
+	defer file.Close()
+
+	header := make([]byte, qcowHeaderProbe)
+	read, err := io.ReadFull(file, header)
+	if err != nil && read < qcowHeaderProbe {
+		// Too short to be a qcow2 header at all, so there is nothing here to reference.
+		return nil
+	}
+	if !bytes.Equal(header[:qcowMagicLen], qcowMagic) {
+		return nil // raw, or some other format with no backing concept
+	}
+
+	refuse := func(what string) error {
+		return fmt.Errorf("base image %s declares %s, so it cannot be pinned\n"+
+			"BaseDigest covers this file's bytes, and those bytes only point at the real data; "+
+			"the pin would keep matching while the guest booted something else.\n"+
+			"flatten it first: qemu-img convert -O qcow2 %s <flattened.qcow2>, then re-pin",
+			base, what, base)
+	}
+	if binary.BigEndian.Uint64(header[qcowBackingOffsetAt:]) != 0 {
+		return refuse("a backing file")
+	}
+	if binary.BigEndian.Uint32(header[qcowMagicLen:]) >= 3 &&
+		binary.BigEndian.Uint64(header[qcowIncompatibleAt:])&qcowExternalDataBit != 0 {
+		return refuse("an external data file")
+	}
 	return nil
 }
 
@@ -156,14 +216,8 @@ func fileDigest(path string) (string, error) {
 // into a config.
 func Digest(path string) (string, error) { return fileDigest(path) }
 
-// WriteSeed builds the app's provisioning disc: a tiny read-only filesystem the guest reads
-// on boot. Rebuilt on every launch, so editing the config's identity fields takes effect
-// without touching the guest's disk.
-//
-// What it carries depends on what the guest can read. cloud-init takes user-data and
-// meta-data; a guest on the compatible device profile has never heard of cloud-init, so it
-// also gets zinc-setup.cmd, which stages the virtio drivers from the virtio-win disc. The
-// alternative was a second disc for one text file.
+// WriteSeed builds the app's provisioning disc, rebuilt on every launch so editing the config's
+// identity fields takes effect without touching the guest's disk.
 func WriteSeed(path string, cfg schema.AppConfig) error {
 	files, err := seedFiles(cfg)
 	if err != nil {
@@ -197,11 +251,10 @@ func WriteSeed(path string, cfg schema.AppConfig) error {
 	return nil
 }
 
-// seedFiles decides what goes on the provisioning disc, by what the guest can read. A
-// cloud-init guest takes user-data and meta-data. A guest on the compatible device profile
-// has never heard of cloud-init, so it also gets zinc-setup.cmd - the only thing Zinc can
-// hand such a guest that it will actually run. Kept separate from writing them so the choice
-// can be tested without an ISO tool.
+// seedFiles decides what goes on the disc by what the guest can read. cloud-init takes user-data and
+// meta-data; a compatible-profile guest has never heard of it and gets zinc-setup.cmd instead, which
+// stages the virtio drivers. Kept separate from writing them so the choice is testable without an
+// ISO tool.
 func seedFiles(cfg schema.AppConfig) (map[string]string, error) {
 	userData, err := userData(cfg)
 	if err != nil {
@@ -218,15 +271,13 @@ func seedFiles(cfg schema.AppConfig) (map[string]string, error) {
 	return files, nil
 }
 
-// metaData renders the seed's meta-data document as JSON. cloud-init documents this file
-// as YAML, and JSON is valid YAML, so emitting JSON satisfies both the full implementation
-// and the cut-down ones: cirros parses meta-data strictly as JSON and rejects a plain
-// YAML mapping outright, which was found by booting one.
+// metaData renders meta-data as JSON. cloud-init documents it as YAML and JSON is valid YAML, which
+// satisfies the cut-down implementations too: cirros parses it strictly as JSON and rejects a plain
+// YAML mapping, found by booting one.
 //
-// instance-id is what cloud-init uses to decide whether it has already provisioned this
-// guest, so keeping it stable per app means a rebuilt seed does not re-run first-boot
-// steps on a disk that already has them. public-keys is the classic EC2-style field, read
-// by implementations that never look at user-data's users list.
+// instance-id is how cloud-init decides whether it already provisioned this guest, so keeping it
+// stable per app stops a rebuilt seed re-running first-boot steps. public-keys is the EC2-style
+// field, read by implementations that never look at user-data.
 func metaData(cfg schema.AppConfig) (string, error) {
 	document := map[string]any{
 		"instance-id":    "zinc-" + cfg.AppNameID,

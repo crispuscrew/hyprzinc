@@ -25,7 +25,7 @@ func writeStoreApp(t *testing.T, name, body string) {
 // busAppYAML is an app that asked for a filtered bus. KeepUserID rides along because
 // validation refuses the pair without it (the proxy serves the socket as the invoking user).
 func busAppYAML(name string) string {
-	return "SchemaVersion: 2\nType: ZincContainer\nAppNameID: " + name + "\n" +
+	return "SchemaVersion: 3\nType: ZincContainer\nAppNameID: " + name + "\n" +
 		"ImageMeta:\n  Image: docker.io/library/alpine" + digestPin + "\n" +
 		"InternalUserMeta:\n  KeepUserID: true\n" +
 		"DBusMeta:\n  Talk:\n    - org.freedesktop.portal.Desktop\n"
@@ -99,7 +99,7 @@ func TestWhereJSONUninstanced(t *testing.T) {
 // for a file that cannot exist, and blame the wrong side when it is missing.
 func TestWhereReportsNoBusForAnAppThatAskedForNone(t *testing.T) {
 	fixture(t)
-	writeStoreApp(t, "plain", "SchemaVersion: 2\nType: ZincContainer\nAppNameID: plain\n"+
+	writeStoreApp(t, "plain", "SchemaVersion: 3\nType: ZincContainer\nAppNameID: plain\n"+
 		"ImageMeta:\n  Image: docker.io/library/alpine"+digestPin+"\n")
 
 	var err error

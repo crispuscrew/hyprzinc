@@ -1,4 +1,4 @@
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 AppNameID: producer
 Description: tier-2 scenario - publishes port 5432 to sibling apps over a private link

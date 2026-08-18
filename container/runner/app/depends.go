@@ -10,16 +10,9 @@ import (
 	"github.com/crispuscrew/zinc/container/runner/domain/options"
 )
 
-// startDependencies brings up everything cfg needs before cfg itself launches (docs
-// section 6.6: "auto-starts dependencies first"). Each name in StartConditions.DependsOn
-// that is not already running is loaded from the store and launched first,
-// depth-first, so a dependency's own dependencies come up before it, and then - if it
-// declares a ReadyCheck - waited for until it says it is ready. An already-running
-// dependency is left untouched. A dependency cycle is reported as an error rather than
-// recursed into forever.
-//
-// chain is the stack of apps currently mid-launch (root → cfg's parent); cfg is
-// appended before recursing, so a name reappearing in it is a cycle.
+// startDependencies brings up everything cfg needs first (section 6.6), depth-first, waiting on any
+// ReadyCheck. An already-running dependency is untouched; a cycle is an error. chain is the stack
+// of apps mid-launch, so a name reappearing in it is that cycle.
 func (svc Service) startDependencies(cfg schema.AppConfig, opt options.HostOptions, chain []string, started map[string]bool) error {
 	if len(cfg.StartConditions.DependsOn) == 0 {
 		return nil
@@ -66,24 +59,12 @@ var readyPollInterval = 500 * time.Millisecond
 // never going to be ready fails the launch with a message instead of hanging.
 const defaultReadyTimeout = 60 * time.Second
 
-// waitReady holds the launch of dependent until depCfg reports itself ready, and fails the
-// launch if it does not within its timeout. An app with no ReadyCheck is ready as soon as it
-// is running, which is what DependsOn meant before and still means for most apps.
+// waitReady holds dependent until depCfg is ready, and fails the launch if it never is. Fatal on
+// purpose: a client routed through a gateway has it as default route and DNS, so starting early
+// means no working network at all.
 //
-// The failure is deliberately fatal rather than a warning that lets the dependent start
-// anyway. The case this exists for is a gateway: a client routed through a sibling has that
-// sibling as its default route and its DNS, so starting it before the tunnel is up gives it
-// no working network at all - fail closed and say which dependency was not ready, rather
-// than start an app whose every connection will fail for a reason nothing reported.
-//
-// Only a dependency this launch started is waited on. One that was already running was
-// either gated the same way by whoever started it, or started by hand, and re-probing it
-// would turn every launch behind a momentarily-unhealthy dependency into a failure rather
-// than the start-order race this closes.
-//
-// A dependency that failed to become ready is left running, like every other dependency an
-// aborted launch had already started. Its logs are how an author finds out why it never came
-// up, and stopping it would also stop it for anything else already routed through it.
+// Only a dependency this launch started is waited on, or every launch behind a momentarily
+// unhealthy one would fail. One that never came ready is left running: its logs are the evidence.
 func (svc Service) waitReady(depCfg schema.AppConfig, dependent string) error {
 	if len(depCfg.StartConditions.ReadyCheck) == 0 {
 		return nil
@@ -106,19 +87,10 @@ func (svc Service) waitReady(depCfg schema.AppConfig, dependent string) error {
 	}
 }
 
-// checkNetwork fails closed on NetworkLists this build cannot enforce yet. Supported:
-// self-scoped egress allow/deny lists (own pasta netns + nft output chain, section 5.3), tier-3
-// LAN publishing (Ingress && Host - nft input chain + pod `-p`), and tier-2 sibling links
-// (a producer's self-scoped ingress, a consumer's egress naming its AppName - a private
-// interface-gated bridge). Rejected so a config is stopped at launch rather than silently
-// mis-enforced: a routing gateway (multi-homing), an ingress list that targets an AppName
-// (contradictory), and host-scoped egress.
-//
-// Links may now coexist with other networking on one app. They could not before, because
-// the ruleset was one kind or the other and whichever ran ignored the other kind of list
-// outright - a linked app's address rules simply vanished. The renderer gates both at once
-// now, so the combination is enforceable and no longer refused: a gateway app needs a link
-// AND real egress to be worth routing through.
+// checkNetwork fails closed on NetworkLists this build cannot enforce. Supported: self-scoped
+// egress (section 5.3), tier-3 LAN publishing, tier-2 sibling links. Rejected: routing gateways
+// (multi-homing), ingress targeting an AppName, host-scoped egress. Links may coexist with other
+// networking, since the renderer now gates by interface and by address at once.
 func checkNetwork(cfg schema.AppConfig) error {
 	linked := false
 	for _, netList := range cfg.NetworkMeta.NetworkLists {

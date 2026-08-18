@@ -93,7 +93,6 @@ var ActionsByContext = map[Context][]Action{
 // Contexts lists every context in display order.
 var Contexts = []Context{CtxList, CtxForm, CtxLogs, CtxConfirm}
 
-// knownAction reports whether act is a valid action in ctx.
 func knownAction(ctx Context, act Action) bool {
 	for _, a := range ActionsByContext[ctx] {
 		if a == act {

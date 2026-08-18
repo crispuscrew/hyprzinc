@@ -133,17 +133,75 @@ func TestInternalUser_BothHalvesOrNeither(t *testing.T) {
 // Nothing in Zinc proxies or filters notifications, so every field in this block is inert.
 // Accepting Silenced would tell an author their app is muted while it notifies freely; an
 // unimplemented mechanism is refused rather than mis-enforced.
-func TestNotifications_RefusedUntilImplemented(t *testing.T) {
+// A notification policy is enforced by a filter in the app's bus path, so it needs a bus. An
+// app with none cannot notify at all, and a policy over traffic that cannot happen would read
+// as a control while controlling nothing.
+func TestNotifications_NeedABus(t *testing.T) {
 	cfg := baseCfg()
 	cfg.NotificationMeta.Silenced = true
 	err := Validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "NotificationMeta") {
-		t.Fatalf("a set notification field: want a NotificationMeta error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "needs a session bus") {
+		t.Fatalf("a policy with no DBusMeta: want a bus error, got: %v", err)
+	}
+
+	// A bus that cannot reach the notification service is the same gap by another route.
+	cfg.InternalUserMeta.KeepUserID = true // a filtered bus is a uid agreement with the proxy
+	cfg.DBusMeta.Talk = []string{"org.freedesktop.portal.Desktop"}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "not allowed to reach") {
+		t.Fatalf("a bus without the notification name should be refused, got: %v", err)
+	}
+
+	// With the grant in place the policy is enforceable, so it validates.
+	cfg.DBusMeta.Talk = []string{"org.freedesktop.Notifications"}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("a policy on an app that may notify should pass, got: %v", err)
 	}
 
 	// The zero value is what every existing app has, and must stay legal.
 	if err := Validate(baseCfg()); err != nil {
 		t.Fatalf("an untouched notification block should pass, got: %v", err)
+	}
+}
+
+// Disabled and Silenced answer the same call in opposite ways, so a config cannot ask for both.
+func TestNotifications_DisabledAndSilencedAreOpposites(t *testing.T) {
+	cfg := baseCfg()
+	cfg.InternalUserMeta.KeepUserID = true
+	cfg.DBusMeta.Talk = []string{"org.freedesktop.Notifications"}
+	cfg.NotificationMeta.Disabled = true
+	cfg.NotificationMeta.Silenced = true
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "opposites") {
+		t.Fatalf("want a contradiction error, got: %v", err)
+	}
+}
+
+// A prefix that is written but not switched on reads as if it were in force, which is the same
+// trap every other unenforced field in this schema is refused for.
+func TestNotifications_PrefixAndItsSwitchMustAgree(t *testing.T) {
+	cfg := baseCfg()
+	cfg.InternalUserMeta.KeepUserID = true
+	cfg.DBusMeta.Talk = []string{"org.freedesktop.Notifications"}
+
+	cfg.NotificationMeta.UseCustomPrefix = true
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "CustomPrefix: required") {
+		t.Fatalf("UseCustomPrefix with no prefix should be refused, got: %v", err)
+	}
+
+	cfg.NotificationMeta.UseCustomPrefix = false
+	cfg.NotificationMeta.CustomPrefix = "[work]"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "set UseCustomPrefix") {
+		t.Fatalf("a prefix with the switch off should be refused, got: %v", err)
+	}
+
+	cfg.NotificationMeta.UseCustomPrefix = true
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("a prefix and its switch together should pass, got: %v", err)
+	}
+
+	// The prefix lands in a summary a notification server renders.
+	cfg.NotificationMeta.CustomPrefix = "[work]\nSystem"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "single line") {
+		t.Fatalf("a prefix carrying a newline should be refused, got: %v", err)
 	}
 }
 
@@ -178,5 +236,77 @@ func TestReadyCheck_ProbeAndTimeoutAgree(t *testing.T) {
 	both.StartConditions.ReadyTimeoutSec = 90
 	if err := Validate(both); err != nil {
 		t.Fatalf("a probe with a timeout should pass, got: %v", err)
+	}
+}
+
+// A mount source has to name the same directory for everyone who reads the config. Podman
+// resolves a relative source against its own working directory, and a source with no
+// separator becomes a named volume it creates, so neither is what the YAML appears to say.
+func TestVolumeHostSourceMustBeAbsolute(t *testing.T) {
+	for _, source := range []string{"Downloads", "./data", "~/.ssh", "../secrets"} {
+		cfg := baseCfg()
+		cfg.Volumes = []schema.Volume{{HostMounted: true, HostMount: source, InnerMount: "/data"}}
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "absolute path") {
+			t.Errorf("HostMount %q: want an absolute-path error, got: %v", source, err)
+		}
+	}
+}
+
+// Mounting the runtime directory hands the app the raw session bus and the raw compositor
+// socket while DBusMeta stays empty, so every Zinc report - zcr where, zcr bus, the Wayland
+// label - describes an app that has neither. The grant is invisible where a reviewer looks.
+func TestVolumeCannotMountTheBrokeredSockets(t *testing.T) {
+	for _, source := range []string{
+		"/run/user/1000",
+		"/run/user/1000/bus",
+		"/run/user/1000/wayland-0",
+		"/proc",
+		"/sys/fs/cgroup",
+	} {
+		cfg := baseCfg()
+		cfg.Volumes = []schema.Volume{{HostMounted: true, HostMount: source, InnerMount: "/x", Writable: true}}
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "brokers") {
+			t.Errorf("HostMount %q: want a refusal naming the brokered sockets, got: %v", source, err)
+		}
+	}
+	// An ordinary host path is still an ordinary explicit grant.
+	cfg := baseCfg()
+	cfg.Volumes = []schema.Volume{{HostMounted: true, HostMount: "/home/user/Downloads", InnerMount: "/data"}}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("an ordinary absolute mount should be allowed, got: %v", err)
+	}
+}
+
+// The key's destination is built from the last element of Path, and Base("/..") is "/", so
+// a ".." tail mounts the source OVER the container home rather than into it.
+func TestKeyPathMustBeAbsoluteAndWithoutDotDot(t *testing.T) {
+	for _, path := range []string{"~/.ssh/id_ed25519", "keys/id_ed25519", "/home/u/.ssh/.."} {
+		cfg := baseCfg()
+		cfg.Keys = []schema.Key{{Type: schema.SSH, Path: path}}
+		if err := Validate(cfg); err == nil {
+			t.Errorf("Keys.Path %q was accepted", path)
+		}
+	}
+}
+
+// digestRE was anchored only at the tail, so a reference merely had to END in something
+// digest-shaped. The image is the one config value that reaches podman as a bare positional,
+// where pflag reads a leading '-' as a flag rather than as an image name.
+func TestImageCannotBeShapedLikeAFlag(t *testing.T) {
+	const digest = "@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	for _, image := range []string{"-v/:/host" + digest, "--privileged" + digest} {
+		cfg := baseCfg()
+		cfg.ImageMeta.Image = image
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "digest-pinned") {
+			t.Errorf("Image %q was accepted, got: %v", image, err)
+		}
+	}
+	cfg := baseCfg()
+	cfg.ImageMeta.Image = "docker.io/library/alpine" + digest
+	if err := Validate(cfg); err != nil {
+		t.Errorf("an ordinary pinned image should validate, got: %v", err)
 	}
 }

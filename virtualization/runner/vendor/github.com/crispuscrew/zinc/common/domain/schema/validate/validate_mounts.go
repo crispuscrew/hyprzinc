@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/crispuscrew/zinc/common/domain/schema"
@@ -19,27 +20,69 @@ func checkVolume(index int, volume schema.Volume, add addFunc) {
 			add("Volumes[%d].HostMount: required when HostMounted=true", index)
 		case hasUnsafe(volume.HostMount) || strings.ContainsAny(volume.HostMount, ":,"):
 			add("Volumes[%d].HostMount %q: must not contain ':', ',', or whitespace (it shifts podman's -v fields)", index, volume.HostMount)
+		default:
+			checkHostSource("Volumes", index, volume.HostMount, add)
 		}
 	}
 	checkSizeLimit("Volumes", index, volume, add)
 }
 
-// checkConfig: like a Volume but bundle-relative (apps/<name>/configs/) - no absolute
-// path, leading '/', or '..'; HostMounted is ignored (a Config is always bundle-sourced).
-func checkConfig(index int, configMount schema.Volume, add addFunc) {
-	checkInner("Configs", index, configMount.InnerMount, add)
-	source := configMount.HostMount
+// brokeredPrefixes are host paths a mount must never name, because Zinc's job is to hand the app a
+// filtered stand-in for what lives there: $XDG_RUNTIME_DIR holds the session bus, the compositor
+// socket and every OTHER Zinc app's sockets; /proc and /sys are host state.
+//
+// Literal paths rather than $XDG_RUNTIME_DIR, because this package is pure and cannot read the
+// environment. A session that puts it somewhere other than /run/user is not covered.
+//
+// The one place "an explicit mount is an explicit grant" does not apply: a config naming the raw bus
+// reads as an ordinary directory mount, and every Zinc surface still reports the app as having no bus.
+// The grant is invisible exactly where a reviewer would look.
+var brokeredPrefixes = []string{"/run/user", "/proc", "/sys", "/dev"}
+
+// checkHostSource applies the host-path policy shared by every host-side mount source.
+func checkHostSource(list string, index int, source string, add addFunc) {
+	// Absolute only. Podman resolves a relative source against ITS OWN working directory, which is
+	// wherever zcr was invoked from, so the same config mounts a different directory per caller. And a
+	// source with no separator at all is read as a NAMED VOLUME and created: "HostMount: Downloads"
+	// silently becomes a fresh empty volume while the config still says HostMounted: true.
+	if !strings.HasPrefix(source, "/") {
+		add("%s[%d].HostMount %q: must be an absolute path - podman resolves a relative source against the directory zcr happened to be started in, and a source with no '/' at all becomes a named volume it creates rather than the host path this names", list, index, source)
+		return
+	}
+	if hasDotDot(source) {
+		add("%s[%d].HostMount %q: must not contain '..' segments - the path that gets mounted should be the path that was reviewed", list, index, source)
+		return
+	}
+	// Clean first, then compare SEGMENTS. A raw prefix test is bypassed by any spelling the kernel
+	// resolves the same way ("//proc", "/./proc", "/run//user/1000"), and it also refuses things it
+	// should not, since "/sys" matches "/sysroot/home/me" - the real root on an ostree system.
+	cleaned := filepath.Clean(source)
+	for _, prefix := range brokeredPrefixes {
+		if cleaned != prefix && !strings.HasPrefix(cleaned, prefix+"/") {
+			continue
+		}
+		add("%s[%d].HostMount %q: %s is host state Zinc brokers or grants by other means (the session bus and compositor sockets under /run/user, the devices behind DisplayMeta and AudioMeta, /proc and /sys); mounting it hands the app the capability directly while every Zinc report still says it has none. Ask for the capability instead: DBusMeta for the bus, DisplayMeta for the display and GPU, AudioMeta for sound devices", list, index, source, prefix)
+		return
+	}
+}
+
+// checkConfig screens one ConfigFile. The source is bundle-relative by design, so the rules
+// are the mirror image of a Volume's: a Volume must be absolute, a Config must not be.
+func checkConfig(index int, configFile schema.ConfigFile, add addFunc) {
+	checkInner("Configs", index, configFile.InnerMount, add)
+	source := configFile.BundlePath
 	switch {
 	case strings.TrimSpace(source) == "":
-		add("Configs[%d].HostMount: must name a path under the app bundle (apps/<name>/configs/)", index)
+		add("Configs[%d].BundlePath: must name a file under the app's bundle (apps/<app>/configs/)", index)
 	case hasUnsafe(source) || strings.ContainsAny(source, ":,"):
-		add("Configs[%d].HostMount %q: must not contain ':', ',', or whitespace (it shifts podman's -v fields)", index, source)
+		add("Configs[%d].BundlePath %q: must not contain ':', ',', or whitespace (it shifts podman's -v fields)", index, source)
 	case strings.HasPrefix(source, "/"):
-		add("Configs[%d].HostMount %q: must be relative to the app bundle, not an absolute path", index, source)
+		add("Configs[%d].BundlePath %q: must be relative to the app's bundle, not an absolute path - an absolute host path is a Volume, and that is where one gets reviewed", index, source)
 	case hasDotDot(source):
-		add("Configs[%d].HostMount %q: must not escape the app bundle (no '..' segments)", index, source)
+		add("Configs[%d].BundlePath %q: must not escape the bundle (no '..' segments)", index, source)
+	case strings.Contains(source, "{"):
+		add("Configs[%d].BundlePath %q: placeholders are for runtime paths (Volumes), not for a bundle file, which ships with the app", index, source)
 	}
-	checkSizeLimit("Configs", index, configMount, add)
 }
 
 // checkKeys: known Type + field-shift-safe Path (mounted path:dest:ro).
@@ -57,6 +100,16 @@ func checkKeys(keys []schema.Key, add addFunc) {
 			add("Keys[%d].Path: must not be empty", index)
 		case hasUnsafe(keyEntry.Path) || strings.ContainsAny(keyEntry.Path, ":,"):
 			add("Keys[%d].Path %q: must not contain ':', ',', or whitespace (it shifts podman's -v fields)", index, keyEntry.Path)
+		case !strings.HasPrefix(keyEntry.Path, "/"):
+			add("Keys[%d].Path %q: must be an absolute path ('~' is not expanded, and a relative path resolves against wherever zcr was started)", index, keyEntry.Path)
+		case hasDotDot(keyEntry.Path):
+			// The destination is filepath.Join(home, dir, filepath.Base(Path)), and Base("/..") is "/".
+			add("Keys[%d].Path %q: must not contain '..' segments - the destination is derived from the path's last element, so '..' mounts the source over the container home instead of into it", index, keyEntry.Path)
+		default:
+			// A Key is a host bind mount like any other, so it gets the same host-path policy. Without this it was
+			// the way around it: "Path: /run/user/1000/bus" is absolute, has no '..' and no field-shifting
+			// character, and mounts the unfiltered session bus into the container home while DBusMeta stays empty.
+			checkHostSource("Keys", index, keyEntry.Path, add)
 		}
 	}
 }

@@ -1,15 +1,9 @@
-// Package tui is zc's keyboard-first terminal UI (docs/architecture.md section 9.1, M2).
+// Package tui is zc's keyboard-first terminal UI (docs section 9.1, M2). Model + Update are the
+// functional core, with all I/O in tea.Cmd closures (commands.go), so the decision logic is testable
+// without a terminal.
 //
-// The Model + Update form the functional core: Update is a pure transition over
-// (Model, Msg). All I/O - store reads/writes (authoring) and the zcr shell-outs
-// (running apps) - happens in tea.Cmd closures (commands.go) that drive the creator
-// backend, so the decision logic is testable without a terminal and the TUI is a thin
-// driving adapter.
-//
-// Scope: create / edit / delete / rename / launch / stop / logs, end-to-end by
-// keyboard. The form edits the scalar fields; list-valued fields (Capabilities,
-// NetworkLists, Volumes, Configs, Keys) stay YAML-editable via the advanced $EDITOR
-// action.
+// Scope: create / edit / delete / rename / launch / stop / logs. The form edits the scalar fields;
+// list-valued fields stay YAML-editable through the advanced $EDITOR action.
 package tui
 
 import (
@@ -35,12 +29,16 @@ const (
 	modeKeys   // keybind-scheme picker
 )
 
-// appRow carries an app twice on purpose. cfg is the RESOLVED config - what the app
-// actually is - and drives everything the list shows and every action it offers, so an app
-// that inherits its image or its network is not listed as though it had neither. raw is the
-// file as written, and is what the edit form opens: a form that loaded the resolved config
-// would write the base's values back into the child as if the child had stated them.
+// appRow carries an app twice on purpose. cfg is the RESOLVED config and drives what the list shows;
+// raw is the file as written and is what the edit form opens, since a form loading the resolved config
+// would write the base's values back into the child.
+//
+// name is the STORE KEY, and every ACTION uses it. The config's own AppNameID is only what the file
+// claims: a row that failed to resolve is still listed so it can be repaired, so a dropped
+// "notes.yaml" claiming `AppNameID: firefox` would otherwise send delete, run and stop at the real
+// firefox.
 type appRow struct {
+	name    string
 	cfg     schema.AppConfig
 	raw     schema.AppConfig
 	running bool
@@ -263,46 +261,46 @@ func (mdl Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case keys.Run:
 		if row, ok := mdl.selected(); ok {
-			mdl.status = "launching " + row.cfg.AppNameID + "..."
-			return mdl, launch(mdl.svc, row.cfg.AppNameID)
+			mdl.status = "launching " + row.name + "..."
+			return mdl, launch(mdl.svc, row.name)
 		}
 	case keys.Shell:
 		if row, ok := mdl.selected(); ok {
 			if !row.cfg.StartConditions.Multiterminal {
-				mdl.status = row.cfg.AppNameID + ": a shell needs a multiterminal app"
+				mdl.status = row.name + ": a shell needs a multiterminal app"
 				return mdl, nil
 			}
-			mdl.status = "opening shell for " + row.cfg.AppNameID + "..."
-			return mdl, openShell(mdl.svc, row.cfg.AppNameID)
+			mdl.status = "opening shell for " + row.name + "..."
+			return mdl, openShell(mdl.svc, row.name)
 		}
 	case keys.Build:
 		if row, ok := mdl.selected(); ok {
 			if len(row.cfg.ImageMeta.Install) == 0 {
-				mdl.status = row.cfg.AppNameID + ": no install lines - nothing to build"
+				mdl.status = row.name + ": no install lines - nothing to build"
 				return mdl, nil
 			}
-			mdl.status = "building image for " + row.cfg.AppNameID + "..."
-			return mdl, buildImage(mdl.svc, row.cfg.AppNameID)
+			mdl.status = "building image for " + row.name + "..."
+			return mdl, buildImage(mdl.svc, row.name)
 		}
 	case keys.Stop:
 		if row, ok := mdl.selected(); ok {
-			return mdl, stop(mdl.svc, row.cfg.AppNameID)
+			return mdl, stop(mdl.svc, row.name)
 		}
 	case keys.Logs:
 		if row, ok := mdl.selected(); ok {
-			return mdl, fetchLogs(mdl.svc, row.cfg.AppNameID)
+			return mdl, fetchLogs(mdl.svc, row.name)
 		}
 	case keys.Rename:
 		if row, ok := mdl.selected(); ok && row.loadErr == nil {
-			inp := newInput(row.cfg.AppNameID, "")
+			inp := newInput(row.name, "")
 			cmd := inp.Focus()
-			mdl.rename, mdl.renameFrom = inp, row.cfg.AppNameID
+			mdl.rename, mdl.renameFrom = inp, row.name
 			mdl.mode, mdl.status = modeRename, ""
 			return mdl, cmd
 		}
 	case keys.Delete:
 		if row, ok := mdl.selected(); ok {
-			mdl.confirmName = row.cfg.AppNameID
+			mdl.confirmName = row.name
 			mdl.mode = modeConfirmDelete
 		}
 	case keys.Keys:
@@ -347,11 +345,9 @@ func (mdl Model) handleKeysKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return mdl, nil
 }
 
-// handleRenameKey drives the rename prompt (modeRename): a text input prefilled with
-// the current name. Enter commits the rename through the service (which loads the old
-// definition, rewrites app.name, saves it, and deletes the old - the "delete +
-// recreate"); esc cancels; every other key edits the field. A blank or unchanged name
-// is treated as a cancel so Enter is never a destructive no-op.
+// handleRenameKey drives the rename prompt: Enter commits through the service (load, rewrite the name,
+// save, delete the old), esc cancels. A blank or unchanged name is treated as a cancel, so Enter is
+// never a destructive no-op.
 func (mdl Model) handleRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":

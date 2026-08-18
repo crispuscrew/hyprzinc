@@ -88,10 +88,15 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+      # --no-update-lock-file makes the committed flake.lock load bearing. Without it, nix
+      # silently resolves and writes a fresh lock when flake.nix and flake.lock disagree, so
+      # the job would go green against inputs nobody reviewed and the lock would drift
+      # unnoticed. With it, that disagreement is what fails the build.
+      #
       # Every tool, not just one: they are five separate Go modules with their own vendor
       # trees, and a flake that builds zc proves nothing about zlg.
       - name: build every tool through the flake
-        run: nix build --no-link --print-build-logs .#zc .#zcr .#zvr .#zlt .#zlg
+        run: nix build --no-update-lock-file --no-link --print-build-logs .#zc .#zcr .#zvr .#zlt .#zlg
       # The build succeeding is not the claim ZDE cares about - the claim is that what comes
       # out runs and is the version it says. This is the assertion a consumer can point at.
       - name: the flake's binaries run and report their version

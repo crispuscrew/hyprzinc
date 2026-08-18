@@ -1,8 +1,7 @@
-// Package machine supervises guest processes. Choosing qemu directly over libvirt means
-// this is ours to own: starting a guest detached from the launching shell, finding it
-// again later, and stopping it the way its own OS expects. That cost buys the thing the
-// design is for - qemu runs inside the user's session, so it can open an accelerated
-// window on their compositor, which a daemon-spawned process cannot.
+// Package machine supervises guest processes: starting a guest detached from the launching shell,
+// finding it again, and stopping it the way its own OS expects. Choosing qemu directly over libvirt
+// makes that ours to own, and buys the thing the design is for - qemu runs inside the user's session,
+// so it can open an accelerated window on their compositor.
 package machine
 
 import (
@@ -23,8 +22,7 @@ const (
 	// startGrace is how long to watch a freshly started guest before declaring it up. A
 	// bad command line kills qemu in milliseconds, so this is long enough to catch that
 	// without making a good launch feel slow.
-	startGrace = 2 * time.Second
-	// pollInterval paces the waits below.
+	startGrace   = 2 * time.Second
 	pollInterval = 50 * time.Millisecond
 	// termGrace is how long a guest gets after SIGTERM before SIGKILL. qemu closes its
 	// disks on SIGTERM, so this is about letting it finish that, not about the guest.
@@ -150,12 +148,9 @@ func (runtime Runtime) Stop(app string, force bool, timeout time.Duration) error
 	if err != nil {
 		return fmt.Errorf("%s is not running", app)
 	}
-	// A live pid is not enough: it must still be THIS app's guest. qemu can die without
-	// clearing its pidfile (SIGKILL, the OOM killer, a crash), and the kernel eventually
-	// reissues that number to something unrelated - at which point signalling on the pidfile
-	// alone is "terminate an arbitrary process of this user". State already applies this
-	// check, and firmware.isSwtpm cites the supervisor as the precedent for it; the
-	// supervisor was the one place not doing it.
+	// A live pid is not enough: it must still be THIS app's guest. qemu can die without clearing its
+	// pidfile, and the kernel eventually reissues the number - at which point signalling on the pidfile
+	// alone is "terminate an arbitrary process of this user".
 	if !alive(pid) || !isGuestProcess(pid, app) {
 		runtime.clean(app)
 		return fmt.Errorf("%s is not running (cleaned up a stale pidfile)", app)
@@ -267,11 +262,9 @@ func isGuestProcess(pid int, app string) bool {
 	if err != nil {
 		return false
 	}
-	// /proc cmdline is NUL-separated, so compare argv ELEMENTS rather than searching the
-	// whole blob. A substring check over the joined line matches any command line that
-	// merely mentions the name, and every guest's own cmdline contains its overlay path -
-	// so one app's pid could be read as another's, which for Stop means signalling the
-	// wrong guest. `-name <app>` is what the launcher writes, so require exactly that.
+	// /proc cmdline is NUL-separated, so compare argv ELEMENTS. A substring check matches any command line
+	// merely mentioning the name, and every guest's cmdline contains its overlay path, so one app's pid
+	// could be read as another's. `-name <app>` is what the launcher writes.
 	argv := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
 	named := false
 	for index, arg := range argv {

@@ -107,7 +107,7 @@ func TestAppRunArgs_BackgroundGPUMountCap(t *testing.T) {
 		StopConditions: schema.StopConditions{Background: true},
 		DisplayMeta:    schema.DisplayMeta{DisableSecurityContext: true}, // passthrough; GPU on (default)
 		Volumes:        []schema.Volume{{InnerMount: "/work", HostMounted: true, HostMount: "/home/user/code", Writable: true}},
-		AudioMeta:      schema.AudioMeta{Pipewire: true},
+		AudioMeta:      schema.AudioMeta{Playback: schema.AudioDevice{Default: true}},
 		Capabilities:   []string{"NET_RAW"},
 	}
 	got := appArgs(t, cfg, baseOpts(), []string{"--network", "container:vpn"})
@@ -125,11 +125,11 @@ func TestAppRunArgs_BackgroundGPUMountCap(t *testing.T) {
 	}
 }
 
-func TestAppRunArgs_PipewireWithoutWayland(t *testing.T) {
+func TestAppRunArgs_AudioWithoutWayland(t *testing.T) {
 	cfg := schema.AppConfig{
 		AppNameID: "mpd",
 		ImageMeta: schema.ImageMeta{Image: "img@sha256:abc"},
-		AudioMeta: schema.AudioMeta{Pipewire: true},
+		AudioMeta: schema.AudioMeta{Playback: schema.AudioDevice{Default: true}},
 	}
 	opt := baseOpts()
 	opt.WaylandDisplay = "" // headless: no Wayland socket wired
@@ -562,8 +562,8 @@ func TestAppRunArgs_KeepUserIDIsThePodsWhenFiltered(t *testing.T) {
 // fails with podman's bare "image not known" - a sentence that does not say the image was the
 // user's to build. The hint has to name the command.
 func TestHelperImageHint_NamesTheBuildCommand(t *testing.T) {
-	cmd := ports.Command{Args: []string{"run", "--rm", "zinc/netfilter:local", "true"}}
-	got := helperImageHint(cmd, []byte("Error: zinc/netfilter:local: image not known"))
+	cmd := ports.Command{Args: []string{"run", "--rm", "localhost/zinc/netfilter:local", "true"}}
+	got := helperImageHint(cmd, []byte("Error: localhost/zinc/netfilter:local: image not known"))
 	if !strings.Contains(got, "make -C container/runner netfilter-image") {
 		t.Errorf("hint does not name the build command: %q", got)
 	}
@@ -580,7 +580,7 @@ func TestHelperImageHint_NotForAnAppsOwnImage(t *testing.T) {
 
 // Any other failure must not acquire an image hint.
 func TestHelperImageHint_OnlyForMissingImages(t *testing.T) {
-	cmd := ports.Command{Args: []string{"run", "zinc/netfilter:local", "nft", "-f", "-"}}
+	cmd := ports.Command{Args: []string{"run", "localhost/zinc/netfilter:local", "nft", "-f", "-"}}
 	if got := helperImageHint(cmd, []byte("Error: nft: syntax error")); got != "" {
 		t.Errorf("hint offered for an unrelated failure: %q", got)
 	}
@@ -607,4 +607,184 @@ func TestParsePIDsEmpty(t *testing.T) {
 	if got := parsePIDs("\n"); len(got) != 0 {
 		t.Errorf("parsePIDs of empty output = %v, want nothing", got)
 	}
+}
+
+// podman refuses --rm together with a restart policy, and it refuses at the CLI layer, so
+// nothing is created and the run exits non-zero. StartApp is detached with nil stdio and zcr
+// has already exited by then, so that failure is silent: the launch reports success, the app
+// never starts, and the pod, the nft ruleset, the proxy and the Wayland holder are all left
+// behind. `restart: always` in a compose file imports straight to this.
+func TestAppRunArgs_AutorestartNeverPairsWithRm(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		cfg  func(schema.AppConfig) schema.AppConfig
+	}{
+		{"foreground", func(cfg schema.AppConfig) schema.AppConfig { return cfg }},
+		{"terminal", func(cfg schema.AppConfig) schema.AppConfig {
+			cfg.StartConditions.Terminal = true
+			return cfg
+		}},
+		{"multiterminal holder", func(cfg schema.AppConfig) schema.AppConfig {
+			cfg.StartConditions.Multiterminal = true
+			return cfg
+		}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			cfg := mode.cfg(autorestartCfg())
+			args, err := Runtime{}.AppRunArgs(cfg, options.HostOptions{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			joined := strings.Join(args, " ")
+			if !strings.Contains(joined, "--restart on-failure") {
+				t.Fatalf("Autorestart did not reach the argv: %v", args)
+			}
+			if slices.Contains(args, "--rm") {
+				t.Fatalf("--rm together with --restart: podman refuses this argv outright: %v", args)
+			}
+		})
+	}
+}
+
+func autorestartCfg() schema.AppConfig {
+	cfg := validCfg()
+	cfg.StartConditions.Autorestart = true
+	return cfg
+}
+
+// A Config is mounted from the app's own bundle, read-only by default. Before schema v3 this
+// field validated, expanded placeholders, was counted in the TUI and refused for VM apps, and
+// then produced no mount at all: the app started without its file and nothing said why.
+func TestAppRunArgs_ConfigsAreMountedFromTheBundle(t *testing.T) {
+	cfg := validCfg()
+	cfg.Configs = []schema.ConfigFile{
+		{BundlePath: "settings.json", InnerMount: "/etc/app/settings.json"},
+		{BundlePath: "sub/state.ini", InnerMount: "/etc/app/state.ini", Writable: true},
+	}
+	args, err := Runtime{}.AppRunArgs(cfg, options.HostOptions{BundleDir: "/home/u/.config/zinc/apps/demo/configs"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"/home/u/.config/zinc/apps/demo/configs/settings.json:/etc/app/settings.json:ro,noexec",
+		"/home/u/.config/zinc/apps/demo/configs/sub/state.ini:/etc/app/state.ini:rw,noexec",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing config mount %q in:\n%s", want, joined)
+		}
+	}
+}
+
+// Without a resolvable bundle root there is no source for the file, and mounting a
+// path that resolves to nothing would have podman create an empty directory over the
+// container path. Refuse instead.
+func TestAppRunArgs_ConfigWithoutABundleRootIsRefused(t *testing.T) {
+	cfg := validCfg()
+	cfg.Configs = []schema.ConfigFile{{BundlePath: "settings.json", InnerMount: "/etc/app.json"}}
+	if _, err := (Runtime{}).AppRunArgs(cfg, options.HostOptions{}, nil); err == nil {
+		t.Fatal("a Config with no resolvable bundle directory should refuse, not mount nothing")
+	}
+}
+
+// The app's environment is emitted in sorted order, because a Go map has none and this argv
+// is what --dry-run prints and what the reproducible-build check compares.
+func TestAppRunArgs_EnvIsSortedAndPrecedesTheRunnersOwn(t *testing.T) {
+	cfg := validCfg()
+	cfg.Env = map[string]string{"ZED": "3", "ALPHA": "1", "MID": "2"}
+	// Real host options, so the runner actually emits its own -e flags and the ordering claim
+	// is asserted against something. With an empty HostOptions it emits none and this test
+	// proved only that sorting works.
+	opt := options.HostOptions{RuntimeDir: "/run/user/1000", WaylandDisplay: "wayland-1"}
+	args, err := Runtime{}.AppRunArgs(cfg, opt, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for index, arg := range args {
+		if arg == "-e" && index+1 < len(args) {
+			got = append(got, args[index+1])
+		}
+	}
+	if !slices.Contains(got, "XDG_RUNTIME_DIR=/run/zinc") {
+		t.Fatalf("the runner did not export its own variables, so ordering is untested: %v", got)
+	}
+	for _, runnerOwned := range []string{"XDG_RUNTIME_DIR=/run/zinc", "WAYLAND_DISPLAY=wayland-1"} {
+		if slices.Index(got, runnerOwned) < slices.Index(got, "ZED=3") {
+			t.Errorf("%q must come after the config's own so podman's last-wins keeps the runner's: %v", runnerOwned, got)
+		}
+	}
+	want := []string{"ALPHA=1", "MID=2", "ZED=3"}
+	if len(got) < len(want) {
+		t.Fatalf("env flags = %v, want at least %v", got, want)
+	}
+	if !slices.Equal(got[:len(want)], want) {
+		t.Errorf("env flags = %v, want %v first and in sorted order", got, want)
+	}
+}
+
+func TestAppRunArgs_ReadOnlyRootfs(t *testing.T) {
+	cfg := validCfg()
+	if args, _ := (Runtime{}).AppRunArgs(cfg, options.HostOptions{}, nil); slices.Contains(args, "--read-only") {
+		t.Fatal("--read-only appeared without the config asking")
+	}
+	cfg.ReadOnlyRootfs = true
+	args, err := Runtime{}.AppRunArgs(cfg, options.HostOptions{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(args, "--read-only") {
+		t.Errorf("ReadOnlyRootfs did not reach the argv: %v", args)
+	}
+}
+
+// A bundle is per APP. By the time argv is built, AppNameID carries the instance, so deriving
+// the source here sent `zcr run notes@work` at apps/notes.work/configs, which nothing creates.
+func TestAppRunArgs_ConfigSourceComesFromTheResolvedBundle(t *testing.T) {
+	cfg := validCfg()
+	cfg.AppNameID = "notes.work" // what main.go rewrites an instanced launch to
+	cfg.Configs = []schema.ConfigFile{{BundlePath: "app.toml", InnerMount: "/etc/app.toml"}}
+	opt := options.HostOptions{BundleDir: "/home/u/.config/zinc/apps/notes/configs"}
+	args, err := Runtime{}.AppRunArgs(cfg, opt, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/home/u/.config/zinc/apps/notes/configs/app.toml:/etc/app.toml:ro,noexec"
+	if !slices.Contains(args, want) {
+		t.Errorf("config mount = %v, want one at %q", args, want)
+	}
+}
+
+// A volume with no host path is scratch space, and SizeLimitMiB has to reach the kernel:
+// until this was wired, such a volume produced no argument at all and the size was a number
+// in a file that nothing read.
+func TestAppRunArgs_AnonymousVolumeIsASizedTmpfs(t *testing.T) {
+	cfg := schema.AppConfig{
+		AppNameID: "scratch-app",
+		ImageMeta: schema.ImageMeta{Image: "img@sha256:abc"},
+		Volumes: []schema.Volume{
+			{InnerMount: "/data", Writable: true, SizeLimited: true, SizeLimitMiB: 256},
+			{InnerMount: "/ro-scratch"},
+			{InnerMount: "/work", HostMounted: true, HostMount: "/home/user/code", Writable: true},
+		},
+	}
+	got := appArgs(t, cfg, baseOpts(), nil)
+
+	assertContainsSeq(t, got, "--mount", "type=tmpfs,destination=/data,nosuid,nodev,noexec,tmpfs-size=256m")
+	// Not writable and not executable: the defaults a bind mount gets.
+	assertContainsSeq(t, got, "--mount", "type=tmpfs,destination=/ro-scratch,nosuid,nodev,ro,noexec")
+	// A host-mounted volume in the same list is still a bind mount.
+	assertContainsSeq(t, got, "-v", "/home/user/code:/work:rw,noexec")
+}
+
+// SizeLimited off means podman's default tmpfs size, not a zero-byte one.
+func TestAppRunArgs_UnlimitedAnonymousVolumeStatesNoSize(t *testing.T) {
+	cfg := schema.AppConfig{
+		AppNameID: "scratch-app",
+		ImageMeta: schema.ImageMeta{Image: "img@sha256:abc"},
+		Volumes:   []schema.Volume{{InnerMount: "/tmp/scratch", Writable: true, Executable: true}},
+	}
+	got := appArgs(t, cfg, baseOpts(), nil)
+	assertContainsSeq(t, got, "--mount", "type=tmpfs,destination=/tmp/scratch,nosuid,nodev")
+	mustNotContain(t, got, "tmpfs-size=0m")
 }

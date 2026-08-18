@@ -2,7 +2,7 @@
 # install the program you want instead of authoring a Containerfile. Install builds
 # a derived image (FROM Image + one RUN per entry); Entrypoint runs inside it. A run
 # rebuilds when Image/Install change, or rebuild on demand.
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 
 AppNameID: hollywood
@@ -36,8 +36,9 @@ ResourcesMeta:
   PIDsLimit: 256
 
 AudioMeta:
-  Pipewire: false
-  LegacyALSA: false
+  Playback: none                  # terminal eye-candy, no sound in either direction
+  Microphone: none
+  Monitor: none
 
 HostTheme: true
 

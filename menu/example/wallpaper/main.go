@@ -1,20 +1,17 @@
-// Command wallpaper is a thumbnail wallpaper chooser built on the menu module's grid layout.
-// It scans a directory for images, shows them as a filterable grid of thumbnails, and on Enter
-// sets the chosen one as the wallpaper by running $WALLPAPER_CMD (with the image path appended)
-// - or, if that is unset, just prints the path so the chooser stays compositor-agnostic and
-// composable. It exists to prove the grid layout is reusable by an ordinary program: it depends
-// on nothing but the menu package and the standard library, and builds static and cgo-free.
+// Command wallpaper is a thumbnail wallpaper chooser built on the menu module's grid layout. On Enter
+// it runs $WALLPAPER_CMD with the image path appended, or prints the path if that is unset, so the
+// chooser stays compositor-agnostic. It exists to prove the grid layout is reusable: it depends on
+// nothing but the menu package and the standard library.
 //
 // Usage:
 //
 //	wallpaper [DIR]                      # DIR, else $WALLPAPER_DIR, else ~/Pictures/Wallpapers
 //	WALLPAPER_CMD='swww img' wallpaper   # set via swww
-//	WALLPAPER_CMD='swaybg -i' wallpaper  # set via swaybg (stays running; see setWallpaper)
-//	wallpaper | while read p; do ... done  # unset: prints the path, wire it yourself
+//	WALLPAPER_CMD='swaybg -i' wallpaper  # stays running; see setWallpaper
+//	wallpaper | while read p; do ... done  # unset: prints the path
 //
-// hyprpaper needs two commands (preload, then wallpaper), so point $WALLPAPER_CMD at a wrapper
-// script rather than at hyprctl directly - `hyprctl hyprpaper preload` alone loads the image
-// but never applies it.
+// hyprpaper needs two commands, so point $WALLPAPER_CMD at a wrapper script rather than at hyprctl:
+// `hyprctl hyprpaper preload` alone loads the image but never applies it.
 package main
 
 import (
@@ -116,17 +113,12 @@ func loadWallpapers(dir string) ([]menu.Item, error) {
 // the pause before the overlay closes is not noticeable.
 const setterGrace = 300 * time.Millisecond
 
-// setWallpaper applies the chosen image. With $WALLPAPER_CMD set (e.g. "swww img", "swaybg -i")
-// it runs that command with the path appended and reports an immediate failure. With it unset
-// it just prints the path to stdout, so the chooser works on any compositor and can be piped
-// into whatever sets the wallpaper.
+// setWallpaper runs $WALLPAPER_CMD with the path appended, or prints the path when it is unset.
 //
-// It deliberately does not wait for the command to finish. menu calls this from its Wayland
-// event loop, so blocking here freezes the overlay - and the overlay holds an exclusive
-// keyboard grab, so it would take the keyboard down with it. swaybg and hyprpaper are
-// foreground daemons that hold the background surface and never exit on their own, which would
-// freeze it for good. Instead the setter is started, given a moment to report an early
-// failure (so a broken recipe still reaches the menu's error banner), and then left running.
+// It deliberately does not wait for the command. menu calls this from its Wayland event loop, so
+// blocking freezes the overlay - which holds an exclusive keyboard grab, taking the keyboard with it.
+// swaybg and hyprpaper never exit on their own, which would freeze it for good. The setter is started,
+// given a moment to report an early failure, and left running.
 func setWallpaper(path string) error {
 	command := strings.Fields(os.Getenv("WALLPAPER_CMD"))
 	if len(command) == 0 {

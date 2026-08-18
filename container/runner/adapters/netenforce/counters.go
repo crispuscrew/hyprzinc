@@ -10,13 +10,9 @@ import (
 	"github.com/crispuscrew/zinc/container/runner/ports"
 )
 
-// RuleCounter is one counted rule's reading: where it sits, what it does, the label the
-// ruleset gave it (pasta.go, "counters") and what it has seen.
-//
-// Read the numbers for what they are. A counter lives in the pod's network namespace and is
-// created with it, so it counts from the moment THIS pod was created and is gone when the
-// pod is removed - which `zcr stop`, `zcr restart` and a failed launch all do. It is "since
-// this launch", never a lifetime total, and nothing anywhere persists one.
+// RuleCounter is one counted rule's reading: where it sits, what it does, its label (pasta.go,
+// "counters") and what it has seen. A counter lives in the pod's netns and is created with it, so it
+// reads "since this launch" - `zcr stop`, `zcr restart` and a failed launch all remove the pod.
 type RuleCounter struct {
 	Chain   string `json:"chain"`
 	Verdict string `json:"verdict"`
@@ -25,19 +21,14 @@ type RuleCounter struct {
 	Bytes   uint64 `json:"bytes"`
 }
 
-// Counters returns the command that reads back what an app's ruleset has actually seen, and
-// false when there is nothing to ask: an app with no NetworkLists has no netns of its own,
-// so there is no ruleset and no counter, and that is an answer rather than a failure.
+// Counters returns the command that reads back what an app's ruleset has seen, and false when there
+// is nothing to ask.
 //
-// It goes through the same helper, the same pod and the same capability as the step that
-// applied the ruleset. Reading nftables is not a lesser privilege than writing it - both are
-// one netlink socket that needs CAP_NET_ADMIN - so a second, weaker path does not exist to
-// be built; what exists is this one, aimed at `list` instead of `-f -`.
-//
-// The one real difference is timing: this runs while the app is alive, where every other
-// helper had exited before it started. It joins the pod's network namespace and nothing
-// else - a podman pod shares net, ipc and uts, not pid - so it cannot see, signal or ptrace
-// the app, it holds NET_ADMIN for as long as one ruleset dump takes, and its argv is fixed.
+// It uses the same helper, pod and capability as the step that applied the ruleset: reading nftables
+// is not a lesser privilege than writing it, both being one netlink socket needing CAP_NET_ADMIN.
+// The one difference is timing - this runs while the app is alive. It joins the pod's network
+// namespace only (a pod shares net, ipc and uts, not pid), so it cannot see, signal or ptrace the
+// app, and its argv is fixed.
 func (Enforcer) Counters(cfg schema.AppConfig, opt options.HostOptions) (ports.Command, bool) {
 	if !filtered(cfg) {
 		return ports.Command{}, false
@@ -69,15 +60,13 @@ func nftListArgs(pod, image string) []string {
 // instead of being mistaken for one it does.
 var verdicts = []string{"accept", "drop", "reject", "return", "jump", "goto"}
 
-// ruleJSON is the part of `nft -j list ruleset` this needs. The full schema is large and
-// versioned (metainfo.json_schema_version); decoding only these fields means a ruleset
-// carrying anything else still parses, which matters because the helper image's nft is
-// upgraded independently of this code.
+// ruleJSON is the part of `nft -j list ruleset` this needs. The full schema is large and versioned,
+// so decoding only these fields lets a ruleset carrying anything else still parse - the helper
+// image's nft is upgraded independently of this code.
 //
-// expr stays a list of raw one-key objects because that is what it is: nft writes each
-// statement as its own object keyed by name, and a verdict is spelled `{"accept": null}` -
-// a typed pointer field would decode that null back to nil and lose the very fact that the
-// key was there.
+// expr stays a list of raw one-key objects because that is what it is, and a verdict is spelled
+// `{"accept": null}`: a typed pointer would decode that null to nil and lose the fact that the key
+// was there.
 type ruleJSON struct {
 	Chain   string                       `json:"chain"`
 	Handle  int                          `json:"handle"`
@@ -85,13 +74,9 @@ type ruleJSON struct {
 	Expr    []map[string]json.RawMessage `json:"expr"`
 }
 
-// ParseCounters reads `nft -j list ruleset` and returns one entry per counted rule, in
-// ruleset order - which is evaluation order, so the readout matches the order the rules
-// actually decide in.
-//
-// Rules without a counter are skipped rather than reported as zero: they are the plumbing
-// the ruleset deliberately left bare, and listing them at zero forever would suggest the
-// traffic they carry is not happening.
+// ParseCounters returns one entry per counted rule in ruleset order, which is evaluation order.
+// Rules without a counter are skipped rather than reported as zero: they are the plumbing the ruleset
+// left bare, and a permanent zero would suggest their traffic is not happening.
 func ParseCounters(raw []byte) ([]RuleCounter, error) {
 	var doc struct {
 		Nftables []struct {
@@ -130,7 +115,6 @@ func ParseCounters(raw []byte) ([]RuleCounter, error) {
 	return counters, nil
 }
 
-// counterStats is what a counter statement carries.
 type counterStats struct {
 	Packets uint64 `json:"packets"`
 	Bytes   uint64 `json:"bytes"`

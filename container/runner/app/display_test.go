@@ -28,7 +28,7 @@ func (fake *fakeDisplay) Establish(addr paths.Address, cfg schema.AppConfig, opt
 }
 
 func displaySvc(display *fakeDisplay, engine *fakeRuntime) Service {
-	return New(nil, engine, nil, nil, netenforce.Enforcer{}, dbusproxy.Broker{}, display)
+	return New(nil, engine, nil, nil, netenforce.Enforcer{}, dbusproxy.Broker{}, display, nil, nil)
 }
 
 func displayApp() schema.AppConfig {

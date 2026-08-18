@@ -22,7 +22,7 @@ import (
 
 const (
 	appImage = "localhost/zinc/e2e-app:local"
-	nftImage = "zinc/netfilter:local"
+	nftImage = "localhost/zinc/netfilter:local"
 )
 
 // tool runs a command, returning combined output and any error. The whole harness is
@@ -303,8 +303,8 @@ func TestE2E(t *testing.T) {
 		if _, err := os.Stat(busPath); err != nil {
 			t.Skipf("no session bus at %s; skipping the session-bus scenario", busPath)
 		}
-		if _, err := tool("podman", "image", "exists", "zinc/netfilter:local"); err != nil {
-			t.Skip("zinc/netfilter:local absent (make -C container/runner netfilter-image); skipping the session-bus scenario")
+		if _, err := tool("podman", "image", "exists", "localhost/zinc/netfilter:local"); err != nil {
+			t.Skip("localhost/zinc/netfilter:local absent (make -C container/runner netfilter-image); skipping the session-bus scenario")
 		}
 
 		must(t, zc, "new", "busapp", "--image", appImage,

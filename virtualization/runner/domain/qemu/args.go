@@ -1,10 +1,6 @@
-// Package qemu builds the command line for a VM app. It is pure - a validated config and
-// a set of resolved paths in, argv out, no I/O - which is what lets zvr print the exact
-// command with --dry-run before anything boots, the same promise zcr makes for podman.
-//
-// Everything the guest gets is stated here explicitly. The machine is started with
-// -nodefaults so qemu contributes no devices of its own: a VM's hardware is exactly what
-// the config asked for, never a default that happens to be compiled in.
+// Package qemu builds the command line for a VM app. Pure - validated config and resolved paths in,
+// argv out - which is what lets zvr print the exact command with --dry-run. Started with -nodefaults,
+// so a VM's hardware is exactly what the config asked for and never a compiled-in default.
 package qemu
 
 import (
@@ -42,11 +38,9 @@ type Layout struct {
 	// themselves are attached on every run, not only this one.
 	Installing bool
 
-	// Identity seeds the guest's SMBIOS UUID and MAC instead of the app name. An install has
-	// no app yet and runs under a fixed placeholder name, so deriving from that name would
-	// give every install on every host the same machine identity - the collision the
-	// identity exists to avoid, at the one moment it matters most, since OOBE runs here.
-	// Empty falls back to the app name.
+	// Identity seeds the guest's SMBIOS UUID and MAC instead of the app name. An install has no app yet
+	// and runs under a fixed placeholder, so deriving from that name would give every install on every
+	// host the same identity - at the one moment it matters most, since OOBE runs here.
 	Identity string
 }
 
@@ -89,11 +83,9 @@ func Args(cfg schema.AppConfig, layout Layout) []string {
 	// Read-only, so leaving one in the config costs nothing but a drive letter.
 	args = append(args, mediaArgs(virt.InstallMedia)...)
 	if layout.Installing {
-		// once=d, not order=d: the installer boots from the disc, and every reboot after
-		// that goes to the disk. An installer reboots itself partway through, and with the
-		// disc permanently first that reboot lands back at "press any key to boot from CD"
-		// - press one and the install starts over from the beginning. A one-shot order
-		// takes that trap away instead of documenting it.
+		// once=d, not order=d: the installer boots from the disc and every reboot after goes to the disk.
+		// With the disc permanently first, the installer's own mid-install reboot lands back at "press any
+		// key to boot from CD" and starts over.
 		args = append(args, "-boot", "once=d,menu=on")
 	}
 	args = append(args, netArgs(identity, virt)...)
@@ -102,16 +94,13 @@ func Args(cfg schema.AppConfig, layout Layout) []string {
 	return args
 }
 
-// sandboxArgs applies qemu's own seccomp jail. The host qemu process is the boundary
-// between a guest and this machine, so by default it gives up what it does not need:
-// spawning helpers, raising privileges, changing its own scheduling.
+// sandboxArgs applies qemu's own seccomp jail, since the qemu process is the boundary between a
+// guest and this machine.
 //
-// Guest Vulkan cannot coexist with it. venus runs in a separate virgl_render_server process
-// that virglrenderer forks, and the sandbox both forbids the fork (spawn=deny) and kills the
-// child that inherits its filter - silently, with the only visible symptom being a generic
-// "virgl could not be initialized". So an app that asks for Vulkan runs qemu unsandboxed,
-// and validation warns about it: the guest gains GPU Vulkan, the host process loses its
-// syscall filter. That trade is the caller's to make, which is why Vulkan is opt-in.
+// Guest Vulkan cannot coexist with it: venus runs in a virgl_render_server the sandbox both forbids
+// forking (spawn=deny) and kills, silently, with only a generic "virgl could not be initialized" to
+// show for it. So a Vulkan app runs qemu unsandboxed and validation warns - the trade is the
+// caller's, which is why Vulkan is opt-in.
 func sandboxArgs(vulkan bool) []string {
 	if vulkan {
 		return nil
@@ -184,19 +173,27 @@ func displayArgs(virt schema.VirtualizationMeta) []string {
 	}
 }
 
-// audioArgs routes guest audio to pipewire when the app asked for it. An app that did not
-// gets no sound card at all, rather than a silent one: the grant is explicit, as it is for
-// containers.
+// audioArgs routes guest audio to pipewire when the app asked for it; an app that did not gets no
+// sound card at all rather than a silent one.
+//
+// The microphone is a separate DEVICE, not a setting: hda-duplex has playback and capture streams,
+// hda-output only playback. A guest not granted a microphone has no capture endpoint to open, which
+// is real enforcement - the promise the container side cannot yet keep. Only the `default` form
+// reaches here; validation refuses a device list for a guest.
 func audioArgs(audio schema.AudioMeta) []string {
-	if !audio.Pipewire {
+	if audio.Playback.IsZero() && audio.Microphone.IsZero() {
 		return nil
+	}
+	codec := "hda-output"
+	if !audio.Microphone.IsZero() {
+		codec = "hda-duplex"
 	}
 	return []string{
 		"-audiodev", "pipewire,id=snd0",
 		// intel-hda is the device every guest OS already has a driver for, which matters
 		// more here than the marginal efficiency of a virtio sound device.
 		"-device", "intel-hda",
-		"-device", "hda-duplex,audiodev=snd0",
+		"-device", codec + ",audiodev=snd0",
 	}
 }
 

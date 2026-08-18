@@ -150,3 +150,23 @@ func TestMissingZcr(t *testing.T) {
 		}
 	}
 }
+
+// zc hands the app name to another program's command line, so it has to be a name and not a
+// flag or a path. The launcher has had these two guards since it shipped; zc drives the same
+// runner from the same kind of list and had neither.
+func TestLaunchRejectsFlagShapedName(t *testing.T) {
+	withFakeZcr(t) // without a zcr on PATH, LookPath fails first and the guard is never reached
+	if err := Launch("--net=host"); err == nil {
+		t.Fatal("a flag-shaped app name was accepted")
+	}
+}
+
+// zcr reads an argument ending in ".yaml" as a filesystem path, resolved against zc's own
+// working directory. The store key "notes.yaml" comes from a dropped file "notes.yaml.yaml",
+// so this would run ./notes.yaml: a config the store never held and the TUI never showed.
+func TestLaunchRejectsYAMLSuffixedName(t *testing.T) {
+	withFakeZcr(t)
+	if err := Launch("notes.yaml"); err == nil {
+		t.Fatal("a .yaml-suffixed app name was accepted")
+	}
+}

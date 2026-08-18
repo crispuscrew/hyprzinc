@@ -92,7 +92,6 @@ var Vim = Scheme{
 	},
 }
 
-// builtins maps each built-in scheme name to its definition.
 var builtins = map[string]Scheme{
 	"default": Default,
 	"vim":     Vim,

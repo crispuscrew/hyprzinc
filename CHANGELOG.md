@@ -5,6 +5,181 @@ All notable changes to Zinc are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The version line is
 tracked in [RELEASES.md](RELEASES.md).
 
+## [Unreleased]
+
+### Changed
+
+- **Schema v3: `Configs` is its own type and is finally mounted.** It was declared as
+  `[]Volume`, where three of six fields could not apply to a single file and `HostMount`
+  carried the opposite rule, and it produced no mount at all. Now `[]ConfigFile` with
+  `BundlePath` (relative to the app's bundle), `InnerMount` and `Writable` (read-only by
+  default). Mounted from `$XDG_CONFIG_HOME/zinc/apps/<app>/configs/`, per app rather than per
+  instance. Placeholders in a `BundlePath` are refused rather than expanded.
+
+- **Schema v3: `Env` and `ReadOnlyRootfs`.** There was no way to set an environment variable
+  at all, since `Install` becomes a `RUN` layer rather than an `ENV`. `Env` is a mapping, so a
+  duplicate key cannot be written, and it is emitted sorted because `--dry-run` output must be
+  stable. `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` are refused: they
+  describe what the runner built. `ReadOnlyRootfs` maps to `--read-only`, with the tmpfs
+  mounts left writable. Both are refused for VM apps.
+
+- **Schema v3: `DisplayMeta.RequireSecurityContext`.** A compositor without
+  `wp_security_context_v1` gets handed the raw socket, labelled `zinc.wayland=passthrough`.
+  Nothing could ask for the strict answer; now a config can, and the launch is refused instead.
+  Setting it with `DisableSecurityContext` is refused, as is setting it on a VM app.
+
+- **Schema v3: `AudioMeta.Monitor`, the third audio capability.** A PipeWire sink carries a
+  `.monitor` source, so a client on the socket can record what OTHER apps are playing - a
+  capability that crosses the boundary between two sandboxed apps. Takes `none` or `default`
+  only, since no `/dev/snd` node carries a monitor source. Like `Microphone: none`, `none` is
+  not yet enforced for a container and validation says so.
+
+- **Schema v3: audio is granted one direction at a time.** `Pipewire` and `LegacyALSA` are
+  replaced by `Playback` and `Microphone`, each taking `none`, `default`, or a list of
+  `/dev/snd` nodes. `Pipewire: true` mounted the session socket, which grants capture and the
+  monitor sources along with playback, so every app that wanted to make a sound could listen to
+  the room; on the VM side `hda-duplex` was attached unconditionally.
+
+  The three forms are enforced differently, which is why they are spelled differently: a device
+  list is passed with `--device` and enforced by the kernel; `default` on a VM is enforced by
+  qemu (`hda-output` has no capture stream); `default` on a container is **not** enforced yet,
+  and `zc` warns on exactly that case. Closing it means speaking PipeWire's security context.
+
+  **Migration.** `SchemaVersion` becomes 3. `Pipewire: true` becomes `Playback: default`, plus
+  `Microphone: default` if the app records. `LegacyALSA: true` granted all of `/dev/snd` and has
+  no direct equivalent: name the nodes. Unknown keys are rejected, so a v2 config fails loudly.
+
+### Security
+
+A second audit, aimed at where 0.9.1 did not reach: the VM disk chain, the paths that load a
+config without validating it, and the tools around the runner. Two findings share a root cause:
+a pin covers the bytes of a file, and a file can point somewhere else.
+
+- **A pinned VM base image could hand the guest any file the user can read, or a URL.** A qcow2
+  `backing_file` pointer is inside the digest, so a hostile image pins perfectly while the guest
+  boots whatever it resolves to; with the nbd or curl drivers present it can be a URL. An image
+  declaring a backing or external data file is now refused as not self-contained, checked before
+  the digest so it also applies on the cached path.
+
+- **`zcr stop` and `zcr restart` on a config given by path never validated it.** `AppNameID: --all`
+  turned the teardown's `podman rm -f --ignore <app>` into `--ignore --all`, and `../..` walked
+  its `rm -rf` out into the session runtime directory. Every verb that loads a config now
+  validates the name there, and the socket-directory helper refuses a path outside its own root.
+
+- **A WireGuard `Endpoint` could carry shell metacharacters into the privileged helper.** The
+  hand-rolled address test accepted any colon-bearing string without a slash or space, so
+  `[::$(cmd)::]:51820` reached the tunnel script the helper runs with `CAP_NET_ADMIN` before the
+  ruleset closes the namespace. It goes through `net.ParseIP` now, like its siblings.
+
+- **`Talk: ["org.freedesktop.*"]` was accepted, unwarned.** That subtree contains
+  `org.freedesktop.systemd1`, whose `StartTransientUnit` runs an arbitrary command outside the
+  container. A wildcard must now name at least three elements before the `*`. `zc` additionally
+  warns on a grant naming a service whose purpose is to run code.
+
+- **A config could mount the raw session bus and the raw compositor socket.** A volume naming
+  `/run/user/1000` handed the app both while `DBusMeta` stayed empty and every Zinc surface
+  agreed with it. Sources under the runtime directory, `/proc` and `/sys` are refused.
+
+- **`zvr install` validated nothing.** `--media` and `--disk` went straight into `-drive`, where
+  a second `file=` in the tail replaces the path. Both are screened now, and `--firmware`,
+  `--devices` and `--secure-boot` are checked against their enums rather than silently
+  reinterpreted as BIOS-with-virtio.
+
+- **An unverified UEFI variable store could decide what Secure Boot enforced.** The store beside
+  a base image is adopted on first run and nothing pinned it, so `SecureBoot: true` ran the
+  secure-boot firmware over an attacker-chosen PK/KEK/db. No attacker needed either: install
+  without `--secure-boot`, author with `SecureBoot: true`, and the guest boots in setup mode.
+  Adoption is refused when `SecureBoot` is set.
+
+- **Host mount and key paths must be absolute.** Podman resolves a relative source against its
+  own working directory and reads a separator-less source as a named volume it creates. A `Keys`
+  path additionally could not contain `..`, since `Path: /..` mounted the host filesystem over
+  the container home.
+
+- **`ImageMeta.Image` only had to end in something digest-shaped**, so
+  `-v/:/host@sha256:<64 hex>` validated as pinned and reached podman in a bare positional slot.
+  Anchored at both ends now.
+
+- **`ZINC_NETFILTER_IMAGE` was passed through unchecked**, holding the most privileged image
+  Zinc runs to a weaker standard than an app's own. It must be a `localhost/` reference or a
+  digest pin, and the default is fully qualified.
+
+- **`zvr stop` could signal an unrelated process.** The swtpm check matched "swtpm" anywhere in
+  a recycled pid's command line. It compares argv elements now.
+
+- **`make virgl-venus` built from a mutable tag**, and `zvr` printed the raw clone-and-build
+  sequence as the fix. The commit is pinned and checked, and the hint points at the make target.
+
+### Fixed
+
+- **`Autorestart` produced an argv podman refuses.** `--rm` and `--restart` conflict at the CLI
+  layer, and the launch is detached with no stdio, so `zcr` reported success while the app never
+  started and the pod, ruleset, proxy and holder were left behind. `restart: always` in a compose
+  file imports straight to this.
+
+- **The Wayland holder never let go of a container that runs without `--rm`.** It waited for
+  removal, which never happens for a `KeepAlive` or `Autorestart` app, so it span every 250ms for
+  the session and the context was never revoked. It asks whether the container is running again,
+  with a restart window.
+
+- **`zc tui` acted on the name a config claimed rather than the file it came from.** A dropped
+  `notes.yaml` saying `AppNameID: firefox` made delete remove the real `firefox.yaml` while
+  reporting success. Every action uses the store key now, and the list displays it.
+
+- **`zc` had none of the exec-boundary guards the launcher has**, so a dropped `--net=host.yaml`
+  became a runnable row and `notes.yaml.yaml` listed as `notes.yaml`, which `zcr` re-reads as a
+  relative path. Both guards now exist on both sides.
+
+- **The app list could be rewritten by a config.** Fields are painted unescaped, so a newline in
+  `ImageMeta.Image` added a fabricated row and a cursor escape repainted the row above.
+  Validation never runs on the display path. Control characters are stripped and fields bounded.
+
+- **The bus socket directory was 0700 only at its leaf**, since `mkdir -m 700 -p` leaves the
+  parents at the umask.
+
+- **`safeName` in the creator refused a legal app name.** It tested `..` as a substring, so
+  `my..app` could be created and never deleted again. It compares path segments now.
+
+### Changed
+
+- **The GPU default is documented honestly.** `/dev/dri` is granted unless a config sets
+  `DisplayMeta.DisableGpuAccess`; the architecture doc said twice that it was off by default.
+  The code was always the authority. Opt-out stays, since almost every graphical app needs the
+  GPU: it is the one grant whose zero value is permissive.
+
+- **`flake.lock` is committed.** The flake pinned nixpkgs by commit but shipped no lock, so
+  nothing recorded what was actually built. CI builds with `--no-update-lock-file`.
+
+- **The virtio-win driver ISO no longer claims to be verified.** The check confirmed two files
+  began with `MZ`, which is a corruption check, and the ISO comes from a floating path with no
+  digest. The output now says which of the two it did and prints the digest to pin.
+
+### Still open
+
+- A VM app has no egress control: `-netdev user` is unconditional and `ForwardPorts` only adds
+  inbound entries, so every guest gets unrestricted outbound plus the host's loopback through
+  slirp's gateway. This belongs to `zvr`, not the schema. pasta is already a dependency and can
+  back a qemu netdev, which would give both runtimes one network model.
+- No VRAM limit exists, deliberately. The mechanism is the kernel's `dmem` cgroup controller
+  (6.14+), which needs the DRM driver to register regions; on the development box the controller
+  is present while `dmem.capacity` is empty. A field now would read as a cap and do nothing.
+  Additive when regions exist, with no schema bump.
+- The proxy, pod, netns, bridge and published ports are not torn down when an app exits on its
+  own: the reaping goroutine cannot run, since every front-end launches through a short-lived
+  `zcr`. The leaked pod also makes the next filtered launch fail, `pod create` having no
+  `--replace`. The fix is a supervisor that outlives the app, which the Wayland holder already is.
+- The already-running refusal reads `podman ps` at the top of the launch, but the container does
+  not appear there until the end, so a second launch a second later still passes and its
+  fail-closed teardown removes the first one's pod and proxy. There is no lock in the launch path.
+- `zcr net` reports posture from the config file at report time without probing the running
+  system, so editing a YAML changes what the attestation surface says about a running app.
+- A config run from a file path can claim an `AppNameID` that resolves to another app's address,
+  forging that app's Wayland `app_id`, container name, bus row and `zcr net` posture.
+- Every guest reaches host services on 127.0.0.1 through user-mode networking's gateway.
+- Release tags are unsigned and there are no published checksums.
+- The multiterminal launch enforces in a detached process with stdio discarded, so a failed
+  ruleset load or a rejected security context is reported as a successful launch.
+
 ## [0.9.1] - 2026-07-31
 
 A whole-repo audit, every finding verified against a running system rather than by

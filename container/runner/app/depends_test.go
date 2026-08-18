@@ -65,6 +65,7 @@ func (engine *fakeRuntime) HealthProbe(name string) error {
 	return nil
 }
 func (engine *fakeRuntime) Exists(name string) bool           { return engine.running[name] }
+func (engine *fakeRuntime) IsRunning(name string) bool        { return engine.running[name] }
 func (engine *fakeRuntime) Do([]string) error                 { return nil }
 func (engine *fakeRuntime) Running() (map[string]bool, error) { return engine.running, nil }
 func (engine *fakeRuntime) Logs(string, int) (string, error)  { return "", nil }
@@ -121,7 +122,7 @@ func depApp(name string, deps ...string) schema.AppConfig {
 // which under `go test` would re-exec the test binary. The display wiring has its own tests
 // (display_test.go) with a broker that only records.
 func depSvc(store ports.Store, engine ports.Runtime) Service {
-	return New(store, engine, nil, nil, netenforce.Enforcer{}, dbusproxy.Broker{}, nil)
+	return New(store, engine, nil, nil, netenforce.Enforcer{}, dbusproxy.Broker{}, nil, nil, nil)
 }
 
 // web → vpn → base: each dependency (and its own dependencies) must come up before the

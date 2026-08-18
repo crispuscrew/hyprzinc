@@ -1,33 +1,21 @@
-// Package inherit resolves an app config that starts from another one. A config names a
-// base in Inherits and states only what differs; what it does not state, it takes from the
-// base. Resolution happens every time a config is read, so editing a base changes every app
-// built on it - which is the point, and also the thing to be careful with.
+// Package inherit resolves an app config that starts from another one: a config names a base in
+// Inherits and states only what differs. Resolution happens on every read, so editing a base changes
+// every app built on it.
 //
-// The merge is performed on the YAML itself rather than on a decoded AppConfig, and that is
-// the whole design. Decoding first would lose the one fact the merge depends on: which keys
-// the child actually STATED. Go cannot tell `HostTheme: false` from an absent HostTheme, nor
-// an empty Volumes list from an omitted one - both arrive as the zero value. Merging decoded
-// structs would therefore have to read every zero value as "inherit", which means a child
-// could never turn a base's flag off and never empty a base's list. On a sandboxing tool
-// those are not cosmetic gaps: a base setting DisableSecurityContext or granting a
-// capability would be impossible to walk back in a child, and the merge would only ever
-// loosen. Merging nodes has no such rule, because a stated key is visibly present.
+// The merge is on the YAML rather than on a decoded AppConfig, and that is the design. Decoding first
+// loses which keys the child STATED: Go cannot tell `HostTheme: false` from an absent HostTheme. A
+// struct merge would have to read every zero value as "inherit", so a child could never turn a base's
+// flag off or empty its list - meaning a base granting a capability could not be walked back, and the
+// merge would only ever loosen.
 //
-// The semantics that fall out are the simple ones:
+//   - A key the child states wins, including false and including an empty list.
+//   - A key the child omits comes from the base.
+//   - Nested blocks merge key by key, so stating one field keeps the base's others.
+//   - A stated list replaces the base's entirely: appending would mean a child could never remove an
+//     inherited volume or capability.
 //
-//   - A key the child states wins, whatever its value - including false, and including an
-//     empty list.
-//   - A key the child omits is taken from the base.
-//   - Nested blocks merge key by key, so a child stating one field of StartConditions keeps
-//     the base's other fields rather than replacing the block.
-//   - A list the child states replaces the base's entirely. Lists are not merged element by
-//     element: appending would mean a child could never remove an inherited volume or
-//     capability, and capabilities that only ever accumulate down a chain are the wrong
-//     direction for this tool.
-//
-// Resolution is deliberately NOT what gets written back. A child is stored as its author
-// wrote it; only the reading side merges. Saving a resolved config would flatten the
-// inheritance the first time anyone edited an app in the TUI.
+// Resolution is NOT what gets written back. A child is stored as its author wrote it; saving a resolved
+// config would flatten the inheritance the first time anyone edited it in the TUI.
 package inherit
 
 import (
@@ -70,15 +58,10 @@ func Parent(data []byte) (string, error) {
 	return name, nil
 }
 
-// Resolve returns the app config data with its inheritance applied: the chain is walked from
-// the app up through its bases, and each base is overlaid by the one below it, so the app
-// itself has the last word.
-//
-// loadBase reads a base's raw bytes by name; it is the caller's, because where configs live
-// is the store's business and this package performs no I/O. A cycle, a missing base, or a
-// chain deeper than maxDepth is an error rather than a partial result - a config that cannot
-// be fully resolved must not be run, since what it is missing could be the thing that
-// contains it.
+// Resolve walks the chain from the app up through its bases, each base overlaid by the one below, so
+// the app has the last word. loadBase is the caller's, since where configs live is the store's
+// business. A cycle, a missing base or a chain deeper than maxDepth is an error rather than a partial
+// result: what a half-resolved config is missing could be the thing that contains it.
 func Resolve(data []byte, loadBase func(name string) ([]byte, error)) ([]byte, error) {
 	chain := [][]byte{data}
 	seen := map[string]bool{}
@@ -166,9 +149,15 @@ func documentRoot(data []byte) (*yaml.Node, error) {
 	return root, nil
 }
 
-// mergeNode returns base overlaid with child. Two mappings merge key by key and recurse;
-// anything else means the child simply wins, which is what makes a stated list replace an
-// inherited one and a stated scalar - false included - override.
+// mergeNode returns base overlaid with child. Two mappings merge key by key and recurse; anything else
+// means the child wins, which is what makes a stated list replace an inherited one.
+//
+// replaceWhole names the mappings whose KEYS are the author's rather than the schema's. Env is the
+// case: merging makes it the one field a child cannot narrow, so `Env: {}` left every inherited
+// variable in place and a base setting LD_PRELOAD could not be disowned. A stated Env replaces, which
+// is what the documented rule already says about a stated list.
+var replaceWhole = map[string]bool{"Env": true}
+
 func mergeNode(base, child *yaml.Node) (*yaml.Node, error) {
 	if base.Kind != yaml.MappingNode || child.Kind != yaml.MappingNode {
 		return child, nil
@@ -185,6 +174,11 @@ func mergeNode(base, child *yaml.Node) (*yaml.Node, error) {
 		position := findKey(out, key.Value)
 		if position < 0 {
 			out.Content = append(out.Content, key, value)
+			continue
+		}
+		if replaceWhole[key.Value] {
+			// A child that states this key replaces it outright rather than merging into it.
+			out.Content[position+1] = value
 			continue
 		}
 		merged, err := mergeNode(out.Content[position+1], value)

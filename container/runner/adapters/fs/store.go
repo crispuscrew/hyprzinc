@@ -1,11 +1,7 @@
-// Package fs is the filesystem adapter for the Store port: it persists app definitions
-// as <name>.yaml files under the user's config directory (~/.config/zinc/apps) and
-// provides the YAML decode/encode used by the editor round-trip.
-//
-// Save validates (validate.Validate) before writing, so invalid config never lands on
-// disk, and writes are atomic (temp file + rename) so a crash can't leave a
-// half-written definition. Load only decodes - callers run validate.Validate at launch
-// time, which catches drift from hand edits (docs/architecture.md section 3).
+// Package fs is the filesystem adapter for the Store port: app definitions as <name>.yaml under
+// ~/.config/zinc/apps, plus the YAML codec for the editor round-trip. Save validates before writing
+// and writes atomically; Load only decodes, since callers validate at launch, which is what catches
+// drift from hand edits (docs section 3).
 package fs
 
 import (
@@ -173,11 +169,9 @@ func (sto *Store) LoadResolved(name string) (schema.AppConfig, error) {
 	if derr != nil {
 		return schema.AppConfig{}, derr
 	}
-	// An app must not be able to resolve into another app's identity. A child that omits
-	// AppNameID inherits its base's, and AppNameID is what the runner names the container,
-	// the pod and the derived image after - so `zcr run notes` would build, and `zcr stop
-	// notes` would destroy, whatever `browser` is. Inheriting apps are hand-written (Save
-	// refuses to rewrite one), so nothing else keeps the filename and the name in step.
+	// An app must not be able to resolve into another app's identity: a child omitting AppNameID inherits
+	// its base's, and that is what names the container, the pod and the derived image - so `zcr stop
+	// notes` would destroy whatever `browser` is.
 	if resolved.AppNameID != name {
 		return schema.AppConfig{}, fmt.Errorf("config: %s: resolves to AppNameID %q - an app must keep its own name; state AppNameID in the app rather than taking the base's", name, resolved.AppNameID)
 	}
@@ -211,16 +205,11 @@ func (sto *Store) Marshal(cfg schema.AppConfig) ([]byte, error) {
 	return Marshal(cfg)
 }
 
-// Save validates cfg and atomically writes it to <cfg.AppNameID>.yaml. Invalid config
-// is rejected before anything touches disk.
+// Save validates cfg and atomically writes it to <cfg.AppNameID>.yaml.
 //
-// An app that inherits is refused, and that is a data-loss guard rather than a limitation
-// of the format. Inheritance is recorded in which keys a file STATES, and a decoded
-// AppConfig no longer knows: every field it did not state has become an ordinary zero value,
-// indistinguishable from one stated as zero. Writing that struct back would state all of
-// them, so the child would stop inheriting anything and would instead override its base with
-// zeros - silently, and looking entirely normal on disk. Refusing costs an inheriting app
-// the struct-based editors; writing would cost it its meaning.
+// An app that inherits is refused, as a data-loss guard: inheritance lives in which keys a file
+// STATES, and a decoded AppConfig cannot tell an unstated field from one stated as zero. Writing it
+// back would state all of them, so the child would override its base with zeros, silently.
 func (sto *Store) Save(cfg schema.AppConfig) error {
 	if base := strings.TrimSpace(cfg.Inherits); base != "" {
 		return fmt.Errorf("store: %s inherits from %q, so it is edited as a file rather than rewritten from a form: %s\n"+

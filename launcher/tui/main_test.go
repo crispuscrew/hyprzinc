@@ -67,7 +67,7 @@ func TestLoadApps_ListsUndecodableByName(t *testing.T) {
 	if err := os.MkdirAll(appsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	good := "SchemaVersion: 2\nType: ZincContainer\nAppNameID: good\nDescription: fine\nImageMeta:\n  Image: localhost/x:local\n"
+	good := "SchemaVersion: 3\nType: ZincContainer\nAppNameID: good\nDescription: fine\nImageMeta:\n  Image: localhost/x:local\n"
 	if err := os.WriteFile(filepath.Join(appsDir, "good.yaml"), []byte(good), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -205,7 +205,7 @@ Container work that matures alongside the releases above, not tied to one versio
 - **Trusted image layering:** curated, digest-pinned base images built locally, so an app
   can reference a known-good base without a hand-written Containerfile.
 - **Theme bundle, audio, keys, mounts:** a read-only theme bundle + env for host-matching
-  GTK/Qt apps; pipewire / legacy-ALSA audio on explicit grant; ssh/gpg key mounts with
+  GTK/Qt apps; audio granted per direction, by session device or exact ALSA nodes; ssh/gpg key mounts with
   agent sockets and 0600 enforcement; general host mounts.
 - **Nix home-manager module + flake:** the tools on `$PATH`, a first-run seed of app files,
   and desktop wiring, all reproducible.

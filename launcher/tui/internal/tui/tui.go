@@ -54,7 +54,6 @@ func (mdl Model) Init() tea.Cmd {
 	return loadRunning(mdl.runner)
 }
 
-// Update handles one message.
 func (mdl Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -84,7 +83,6 @@ func (mdl Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return mdl, nil
 }
 
-// handleKey maps a keypress to a state change.
 func (mdl Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.Type {
 	case tea.KeyCtrlC, tea.KeyEsc:
@@ -154,7 +152,6 @@ func (mdl *Model) refilter() {
 	mdl.status = ""
 }
 
-// setRunning marks the named app's running state.
 func (mdl *Model) setRunning(name string, running bool) {
 	for index := range mdl.apps {
 		if mdl.apps[index].Name == name {

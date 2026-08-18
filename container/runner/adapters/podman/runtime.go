@@ -1,16 +1,14 @@
-// Package podman is the container-runtime adapter: it implements the Runtime,
-// ImageBuilder, and ImageResolver ports against the podman CLI. It is the only place
-// that knows podman's argument syntax. AppRunArgs and the *Args builders are pure (no
-// I/O) so launch plans can be inspected and dry-run; the rest exec podman.
-//
-// What it deliberately does NOT decide: the network. AppRunArgs splices in the
-// netFlags it is handed by a NetEnforcer (adapters/netenforce), so swapping the egress
-// mechanism never touches this file (docs/architecture.md section 5.3, section 13).
+// Package podman is the container-runtime adapter: it implements the Runtime, ImageBuilder and
+// ImageResolver ports against the podman CLI, and is the only place that knows podman's argument
+// syntax. The *Args builders are pure so launch plans can be dry-run. It does NOT decide the
+// network - AppRunArgs splices in netFlags from a NetEnforcer (docs section 5.3, section 13).
 package podman
 
 import (
 	"bytes"
 	"fmt"
+	"github.com/crispuscrew/zinc/container/runner/adapters/dbusproxy"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,16 +41,9 @@ var (
 	_ ports.ImageResolver = Resolver{}
 )
 
-// TerminalLaunch wraps a `podman ...` argv in the configured terminal emulator so a
-// CLI/TUI app (StartConditions.Terminal) appears in its own window. term is the
-// emulator argv (e.g. ["foot"] or ["xterm","-e"]); it is run as `term... podman
-// <runArgs...>`. It wraps a `run` argv (single-terminal apps) or an `exec` argv
-// (multiterminal) alike.
-//
-// When hold is set the podman invocation is wrapped in the host shell so the window
-// pauses after it exits - the user can read final output/errors before the window
-// closes. This is emulator-agnostic on purpose: the emulator is user-configured
-// (section 9.1), so we don't rely on an emulator-specific --hold flag.
+// TerminalLaunch wraps a podman argv in the configured terminal emulator. term is the emulator
+// argv (e.g. ["foot"]). When hold is set the invocation goes through the host shell so the window
+// pauses after it exits - emulator-agnostic, since the emulator is user-configured (section 9.1).
 func TerminalLaunch(term, runArgs []string, hold bool) []string {
 	out := append([]string{}, term...)
 	if !hold {
@@ -83,11 +74,9 @@ func shellJoin(args []string) string {
 	return strings.Join(quoted, " ")
 }
 
-// HolderCmd is the main process of a multiterminal app's shared container: a no-op
-// that blocks forever so the container outlives any single terminal. It runs under
-// `--init` (see modeHolder): a bare `sleep` as PID 1 would ignore `podman stop` until
-// the SIGKILL timeout; the injected init (catatonit) owns PID 1, handles SIGTERM, and
-// tears down promptly. Needs `sleep` in the image.
+// HolderCmd is the main process of a multiterminal app's shared container: a no-op that blocks so
+// the container outlives any single terminal. Runs under `--init`, because a bare `sleep` as PID 1
+// would ignore `podman stop` until the SIGKILL timeout. Needs `sleep` in the image.
 func HolderCmd() []string { return []string{"sleep", "infinity"} }
 
 // ExecArgs builds `podman exec -it <app> <cmd...>` - one interactive session into a
@@ -124,30 +113,26 @@ func modeFor(cfg schema.AppConfig) runMode {
 	}
 }
 
-// AppRunArgs builds the app container's `podman run` argv. netFlags is the network
-// attachment supplied by the NetEnforcer (e.g. ["--pod","app-pod"] or
-// ["--network","none"]) and is spliced in after the least-privilege baseline; this
-// adapter never decides the network itself. The trailing image is derived.RunImage
-// (the derived image when ImageMeta.Install is set, else the base). Pure: no I/O.
+// AppRunArgs builds the app's `podman run` argv. netFlags comes from the NetEnforcer and is spliced
+// in after the least-privilege baseline. Pure: no I/O.
 func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlags []string) ([]string, error) {
 	home := opt.HomeDir
 	if home == "" {
 		home = "/root"
 	}
-	// Keys are mounted into the home of whoever runs the app. An app told to run as a
-	// non-root user does not get to read /root, so mounting its ssh key there would put the
-	// file in the container and still deny it - the failure would look like a broken key
-	// rather than a wrong path. /home/<name> is the convention every mainstream image
-	// follows for a named user.
+	// Keys go in the home of whoever runs the app: a non-root app cannot read /root, so a key mounted
+	// there would look like a broken key rather than a wrong path.
 	if user := cfg.InternalUserMeta; user.UseNonRootUser && user.NonRootUserName != "" {
 		home = "/home/" + user.NonRootUserName
 	}
 
 	args := []string{"run"}
 	mode := modeFor(cfg)
-	// StopConditions.KeepAlive keeps the container after its entrypoint exits, so it is
-	// not auto-removed (--rm dropped) for the non-detached modes.
-	keepAlive := cfg.StopConditions.KeepAlive
+	// KeepAlive keeps the container after its entrypoint exits, so --rm is dropped. Autorestart drops
+	// it too, and must: podman refuses the pair at the CLI layer ("the --rm option conflicts with
+	// --restart"), and StartApp is detached with nil stdio, so the launch would report success while
+	// leaking the pod, ruleset, proxy and holder. `restart: always` in a compose import sets this.
+	keepAlive := cfg.StopConditions.KeepAlive || cfg.StartConditions.Autorestart
 	switch mode {
 	case modeTerminal:
 		// CLI/TUI app: needs an interactive TTY and runs in a spawned terminal window
@@ -163,7 +148,11 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		// Multiterminal keep-alive: detached, no TTY, removed on stop (--rm), with
 		// --init so `podman stop` is prompt (see HolderCmd). Its terminals attach via
 		// ExecArgs.
-		args = append(args, "-d", "--rm", "--init")
+		if keepAlive {
+			args = append(args, "-d", "--init")
+		} else {
+			args = append(args, "-d", "--rm", "--init")
+		}
 	default: // modeForeground
 		if !keepAlive {
 			args = append(args, "--rm")
@@ -183,18 +172,23 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 	// escalation. Anything the app genuinely needs is re-added below from Capabilities.
 	args = append(args, "--security-opt", "no-new-privileges", "--cap-drop", "all")
 
-	// The rest of the containment baseline: who the app runs as, and how much of the
-	// machine it may take. Both are part of the sandbox rather than tuning, so they sit
-	// with the capability drop rather than among the optional wiring below.
-	// A pod owns the user namespace of everything that joins it, and podman refuses
-	// `--userns` on a container joining one ("cannot set user namespace mode when joining pod
-	// with infra container"). So a filtered app's keep-id is put on the pod instead, by the
-	// enforcer, and left off here - without this the app silently never started.
+	// The rest of the containment baseline: who the app runs as, and how much of the machine it takes.
+	// keep-id is absent here on purpose - a pod owns the user namespace of everything joining it, and
+	// podman refuses `--userns` on a container joining one ("cannot set user namespace mode when
+	// joining pod"), so a filtered app's keep-id goes on the pod, by the enforcer.
 	args = append(args, userArgs(cfg.InternalUserMeta, slices.Contains(netFlags, "--pod"))...)
 	args = append(args, resourceArgs(cfg.ResourcesMeta)...)
 	args = append(args, healthArgs(cfg.StartConditions)...)
 
 	// Network attachment is the enforcer's decision (section 5.3) - we only splice it in.
+	//
+	// The app's own environment goes above everything the runner exports, because podman lets a later
+	// -e win and the runner's variables describe what it actually built. Sorted, because a Go map has
+	// no order and this argv is what --dry-run prints.
+	for _, name := range slices.Sorted(maps.Keys(cfg.Env)) {
+		args = append(args, "-e", name+"="+cfg.Env[name])
+	}
+
 	args = append(args, netFlags...)
 
 	// XDG_RUNTIME_DIR is exported once, and only when we actually mount a socket under
@@ -208,12 +202,9 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		}
 	}
 
-	// Display / Wayland (section 5.2). The socket mounted is the app's OWN when a security
-	// context was established for it (opt.WaylandSocket, filled in by the launch path once
-	// the compositor has accepted it), and the compositor's own otherwise. The container-side
-	// path and WAYLAND_DISPLAY are identical either way: which socket it is looking at is not
-	// the app's business, and an app that had to be configured per mode would be one more
-	// thing to keep in sync for no gain.
+	// Display / Wayland (section 5.2). The socket is the app's OWN when a security context was
+	// established, the compositor's otherwise; the container-side path and WAYLAND_DISPLAY are
+	// identical either way.
 	if opt.RuntimeDir != "" && opt.WaylandDisplay != "" {
 		socket := filepath.Join(opt.RuntimeDir, opt.WaylandDisplay)
 		mode := "passthrough"
@@ -225,11 +216,8 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 			"-e", "WAYLAND_DISPLAY="+opt.WaylandDisplay,
 		)
 		exportRuntimeDir()
-		// The label records which of the two actually happened. It used to be applied whenever
-		// the app had not opted out, which claimed a security context on every launch
-		// including the ones where none existed - and a label that is wrong is worse than no
-		// label, because it is exactly what a desktop would read to decide how much to trust
-		// the client.
+		// The label records which of the two actually happened. A label claiming a context that does not
+		// exist is worse than none: it is what a desktop reads to decide how much to trust the client.
 		args = append(args, "--label", "zinc.wayland="+mode)
 	}
 	if !cfg.DisplayMeta.DisableGpuAccess {
@@ -241,32 +229,82 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		args = append(args, "-v", opt.ThemeBundleDir+":"+ctrThemeDir+":ro")
 	}
 
-	// Audio (section 3 AudioMeta).
-	if cfg.AudioMeta.Pipewire && opt.RuntimeDir != "" {
-		pipewireSock := filepath.Join(opt.RuntimeDir, "pipewire-0")
+	// A read-only root filesystem. Podman keeps a writable tmpfs on /dev, /dev/shm, /run,
+	// /tmp and /var/tmp (--read-only-tmpfs defaults true), so an app that only needs scratch
+	// space still runs; what stops is writing into the image itself.
+	if cfg.ReadOnlyRootfs {
+		args = append(args, "--read-only")
+	}
+
+	// The notification filter, when one was established (section 3 NotificationMeta). It lands
+	// on the same container path the D-Bus proxy's socket would have, because which of the two
+	// the app is talking to is not the app's business - and the app layer leaves the proxy's own
+	// flags off when this is set, so exactly one of them names that path.
+	if opt.NotifySocket != "" {
+		args = append(args,
+			"-v", opt.NotifySocket+":"+dbusproxy.ContainerSocket+":rw",
+			"-e", "DBUS_SESSION_BUS_ADDRESS=unix:path="+dbusproxy.ContainerSocket)
+	}
+
+	// Audio (section 3 AudioMeta): the config states a direction and a strength, this picks the
+	// transport. `default` means a PipeWire socket, mounted once however many directions asked for
+	// it. The socket is the app's OWN when a security context was established for it
+	// (opt.PipeWireSocket), and the session's own otherwise - the container-side path is the same
+	// either way, so an app needs no per-mode configuration.
+	if audioUsesSession(cfg.AudioMeta) && opt.RuntimeDir != "" {
+		pipewireSock := opt.PipeWireSocket
+		if pipewireSock == "" {
+			pipewireSock = filepath.Join(opt.RuntimeDir, "pipewire-0")
+		}
 		args = append(args, "-v", pipewireSock+":"+filepath.Join(ctrXDGRuntime, "pipewire-0")+":ro")
 		exportRuntimeDir()
 	}
-	if cfg.AudioMeta.LegacyALSA {
-		args = append(args, "--device", "/dev/snd")
+	if devices := audioDevices(cfg.AudioMeta); len(devices) > 0 {
+		for _, device := range devices {
+			args = append(args, "--device", device)
+		}
+		// /dev/snd is reachable by a logind ACL on the seat or by the `audio` group. --device passes the
+		// node but not the group, so without keep-groups the device form silently fails on a group host,
+		// and always fails with UseNonRootUser, whose mapped subuid is in neither.
+		args = append(args, "--group-add", "keep-groups")
 	}
 
-	// Host-mounted volumes (section 3 Volumes). Anonymous/size-limited volumes and Configs
-	// (bundle-relative) are deferred; only explicit host bind mounts are wired here.
+	// Config files (section 3 Configs), read-only unless the config says otherwise. The source is
+	// joined here rather than resolved into the config, so BundlePath stays the relative thing
+	// validation checks.
+	for _, configFile := range cfg.Configs {
+		bundle := opt.BundleDir
+		if bundle == "" {
+			return nil, fmt.Errorf("%s: no bundle directory resolved for this app, so Configs[%q] has no source", cfg.AppNameID, configFile.BundlePath)
+		}
+		// noexec, as Volumes get. ConfigFile deliberately has no Executable field because a
+		// config file is data, and podman's bind default is exec, so without this an authored
+		// file lands executable with nothing in the schema able to say otherwise.
+		mountOpts := "ro,noexec"
+		if configFile.Writable {
+			mountOpts = "rw,noexec"
+		}
+		args = append(args, "-v", filepath.Join(bundle, configFile.BundlePath)+":"+configFile.InnerMount+":"+mountOpts)
+	}
+
+	// Volumes (section 3). A volume with a host path is a bind mount; one without is scratch
+	// space the app is given rather than a location on the host, and it is a tmpfs, which is
+	// what makes SizeLimitMiB a limit the kernel holds rather than a number in a file.
 	for _, volume := range cfg.Volumes {
-		if !volume.HostMounted || strings.TrimSpace(volume.HostMount) == "" {
+		if volume.HostMounted && strings.TrimSpace(volume.HostMount) != "" {
+			mountOpts := "ro"
+			if volume.Writable {
+				mountOpts = "rw"
+			}
+			if volume.Executable {
+				mountOpts += ",exec"
+			} else {
+				mountOpts += ",noexec"
+			}
+			args = append(args, "-v", volume.HostMount+":"+volume.InnerMount+":"+mountOpts)
 			continue
 		}
-		mountOpts := "ro"
-		if volume.Writable {
-			mountOpts = "rw"
-		}
-		if volume.Executable {
-			mountOpts += ",exec"
-		} else {
-			mountOpts += ",noexec"
-		}
-		args = append(args, "-v", volume.HostMount+":"+volume.InnerMount+":"+mountOpts)
+		args = append(args, "--mount", tmpfsMount(volume))
 	}
 
 	// SSH/GPG keys (section 3 Keys) - RO file mounts into the container home.
@@ -278,7 +316,6 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 		args = append(args, "-v", key.Path+":"+filepath.Join(home, dir, filepath.Base(key.Path))+":ro")
 	}
 
-	// Extra capabilities (section 3 Capabilities).
 	for _, capability := range cfg.Capabilities {
 		args = append(args, "--cap-add", capability)
 	}
@@ -301,16 +338,29 @@ func (Runtime) AppRunArgs(cfg schema.AppConfig, opt options.HostOptions, netFlag
 	return args, nil
 }
 
-// userArgs decides who the app runs as inside the container. Both fields were in the schema
-// and validated from the first release and neither reached podman, so an app that asked to
-// run unprivileged ran as root and nothing said otherwise - the worst shape for a setting to
-// have on a sandboxing tool.
+// tmpfsMount renders an anonymous volume as a podman --mount value. nosuid and nodev always,
+// because scratch space is never a place to gain privilege or reach a device; noexec unless the
+// config asked otherwise, matching a bind mount's default.
 //
-// KeepUserID is the rootless-podman question, not the same one. Rootless maps the invoking
-// host user to root inside the container, so a file written into a bind mount comes back
-// owned by the host user either way; what --userns=keep-id changes is that the container
-// sees the SAME uid as the host, which is what an app sharing a host directory with the
-// desktop needs in order to agree about ownership.
+// An unlimited tmpfs is half of host RAM, which is podman's default and the honest reading of
+// SizeLimited being off. Validation refuses SizeLimited without a positive size.
+func tmpfsMount(volume schema.Volume) string {
+	opts := []string{"type=tmpfs", "destination=" + volume.InnerMount, "nosuid", "nodev"}
+	if !volume.Writable {
+		opts = append(opts, "ro")
+	}
+	if !volume.Executable {
+		opts = append(opts, "noexec")
+	}
+	if volume.SizeLimited {
+		opts = append(opts, fmt.Sprintf("tmpfs-size=%dm", volume.SizeLimitMiB))
+	}
+	return strings.Join(opts, ",")
+}
+
+// userArgs decides who the app runs as inside the container. KeepUserID is a separate question:
+// rootless already maps the invoking user to root, and --userns=keep-id instead makes the container
+// see the SAME uid as the host, which an app sharing a host directory needs.
 func userArgs(user schema.InternalUserMeta, inPod bool) []string {
 	var args []string
 	if user.KeepUserID && !inPod {
@@ -325,24 +375,12 @@ func userArgs(user schema.InternalUserMeta, inPod bool) []string {
 	return args
 }
 
-// healthArgs installs StartConditions.ReadyCheck as the container's healthcheck, which is
-// what a dependent's readiness wait probes (HealthProbeArgs). Reusing podman's healthcheck
-// rather than exec'ing the probe ourselves means the answer is recorded in container state:
-// `podman ps` reports health for the same command the launch sequence waits on, instead of a
-// readiness notion only the runner knows about.
+// healthArgs installs ReadyCheck as the container's healthcheck, so `podman ps` reports health for
+// the same command a dependent's readiness wait probes.
 //
-// Written in the CMD-SHELL form, with every word of the author's command single-quoted by
-// shellJoin so an argument containing a space or a quote still means itself. The JSON exec
-// form (["CMD", ...]) is tidier and needs no shell in the image, and it is NOT used here: it
-// works on podman 5 and does not on the podman 4.9 that Ubuntu LTS ships, where the whole
-// bracketed string is handed to a shell instead and the check can never pass. CMD-SHELL is
-// the oldest and most portable spelling, and this is a launch-blocking gate - it has to work
-// on the podman people actually have.
-//
-// The interval is left at podman's own default for the same reason. Disabling it (the check
-// is driven on demand by the readiness wait, so a timer is not needed) is accepted by both
-// versions but is one more thing to differ; keeping the timer also means `podman ps` reports
-// live health rather than the last probe's answer, which is worth more than the saved execs.
+// CMD-SHELL form with every word single-quoted by shellJoin. The JSON exec form is tidier and is
+// NOT used: it works on podman 5 and not on the 4.9 Ubuntu LTS ships, where the check can never
+// pass. The interval stays at podman's default for the same reason.
 func healthArgs(start schema.StartConditions) []string {
 	if len(start.ReadyCheck) == 0 {
 		return nil
@@ -362,12 +400,8 @@ func (rt Runtime) HealthProbe(name string) error {
 	return rt.Exec(ports.Command{Args: HealthProbeArgs(name), Desc: "readiness probe for " + name})
 }
 
-// resourceArgs caps what one app may take from the machine. A container with no limits can
-// exhaust the host's memory or fork until nothing else can start, which is a containment
-// hole rather than a tuning oversight - these were validated and then dropped on the floor.
-//
-// Zero means unlimited throughout, matching the schema and podman's own default, so an app
-// that sets nothing gets exactly the argv it got before.
+// resourceArgs caps what one app may take from the machine. Zero means unlimited throughout,
+// matching the schema and podman's default.
 func resourceArgs(res schema.ResourcesMeta) []string {
 	var args []string
 	if res.MaxCPUCores > 0 {
@@ -379,11 +413,8 @@ func resourceArgs(res schema.ResourcesMeta) []string {
 		args = append(args, "--memory", strconv.FormatInt(res.MaxRamMiB, 10)+"m")
 	}
 	if res.MaxSwapMiB > 0 && res.MaxRamMiB > 0 {
-		// --memory-swap is the TOTAL of memory and swap, not the swap on its own. Passing
-		// the swap figure alone would silently shrink the app's memory ceiling instead of
-		// adding to it - and on a config asking for 2048 MiB of RAM and 512 of swap, it
-		// would cap the whole app at 512. Validation requires the memory limit alongside,
-		// so the sum is always the number the author meant.
+		// --memory-swap is the TOTAL of memory and swap, not swap alone: passing the swap figure alone
+		// would cap a 2048+512 app at 512. Validation requires the memory limit alongside.
 		args = append(args, "--memory-swap", strconv.FormatInt(res.MaxRamMiB+res.MaxSwapMiB, 10)+"m")
 	}
 	if res.PIDsLimit > 0 {
@@ -421,11 +452,9 @@ func (Runtime) Exec(cmd ports.Command) error {
 	return nil
 }
 
-// Capture runs one prepared command and returns its standard output, for the commands whose
-// output is the answer rather than a log (reading the netns counters back). Only stdout: a
-// podman warning on stderr spliced into the middle of a JSON document would turn a readable
-// error into a parse failure with no obvious cause. Stderr goes into the error instead,
-// where it is the explanation.
+// Capture runs one command and returns its stdout, for commands whose output is the answer. Only
+// stdout: a podman warning spliced into a JSON document would turn a readable error into a parse
+// failure. Stderr goes into the error instead.
 func (Runtime) Capture(cmd ports.Command) (string, error) {
 	proc := exec.Command("podman", cmd.Args...)
 	if cmd.Stdin != "" {
@@ -441,24 +470,16 @@ func (Runtime) Capture(cmd ports.Command) (string, error) {
 	return string(out), nil
 }
 
-// helperImageHint turns podman's "image not known" into something a user can act on when the
-// missing image is one WE were supposed to have built.
-//
-// Every privileged step of a launch - the nft lock-down, the WireGuard setup, the D-Bus proxy -
-// runs from the local helper image, deliberately with --pull never, so a launch never fetches
-// anything (section 5.5). The cost of that choice is this failure: a user who has not run
-// `make netfilter-image` gets "zinc/netfilter:local: image not known" and no thread to pull,
-// because nothing in that sentence says the image was theirs to build. Naming the command costs
-// one line and saves the guess.
-//
-// Scoped to zinc/ images on purpose: an app's own image being absent is a different problem
-// with a different fix, and this must not offer the netfilter build as the answer to it.
+// helperImageHint turns podman's "image not known" into something actionable when the missing image
+// is one we were supposed to have built. Helpers run with --pull never (section 5.5), so a user who
+// has not run `make netfilter-image` gets no thread to pull. Scoped to zinc/ images: an app's own
+// image being absent is a different problem.
 func helperImageHint(cmd ports.Command, out []byte) string {
 	if !strings.Contains(string(out), "image not known") {
 		return ""
 	}
 	for _, arg := range cmd.Args {
-		if strings.HasPrefix(arg, "zinc/") {
+		if strings.HasPrefix(arg, "zinc/") || strings.HasPrefix(arg, "localhost/zinc/") {
 			return "\n  hint: " + arg + " is Zinc's own helper image and is built locally, never pulled." +
 				"\n        build it once with: make -C container/runner netfilter-image"
 		}
@@ -466,12 +487,9 @@ func helperImageHint(cmd ports.Command, out []byte) string {
 	return ""
 }
 
-// StartApp starts the app container detached from the caller (Setsid) so it outlives a
-// launcher that exits right after it. A terminal app is wrapped in the configured
-// emulator; a GUI app renders through the Wayland socket. It returns once the process
-// is forked, before `podman run` succeeds; if the app then exits with an error, onFail
-// runs from the reaping goroutine so a post-fork failure can tear down the prepared
-// (still-filtered) pod/netns instead of leaking it.
+// StartApp starts the app detached (Setsid) so it outlives a launcher that exits. It returns once
+// the process is forked, before `podman run` succeeds; onFail then runs from the reaping goroutine,
+// so a post-fork failure tears down the prepared pod instead of leaking it.
 func (Runtime) StartApp(cfg schema.AppConfig, opt options.HostOptions, runArgs []string, onFail func()) error {
 	proc, err := appCmd(cfg, opt, runArgs)
 	if err != nil {
@@ -522,28 +540,26 @@ func (Runtime) Exists(name string) bool {
 	return exec.Command("podman", "container", "exists", name).Run() == nil
 }
 
-// appearWindow and appearPoll bound the wait for a container that does not exist yet. The
-// launch creates it moments after WaitGone is called, but "moments" covers a pod create, an
-// nft load and a D-Bus proxy readiness probe, so the window is generous. It is a window at
-// all so that a launch which failed after the holder started does not leave the holder there
-// for the rest of the session.
+// IsRunning reports whether the named container is running now. A failed query answers false:
+// the callers use it to decide whether to start something, and starting a second holder that
+// then collides by name fails loudly, while attaching to a container that is not there does not.
+func (Runtime) IsRunning(name string) bool {
+	running, err := isRunning(name)
+	return err == nil && running
+}
+
+// appearWindow and appearPoll bound the wait for a container that does not exist yet - the launch
+// still has a pod create, an nft load and a proxy readiness probe to do. A window at all, so a
+// launch that failed after the holder started does not leave it there for the session.
 const (
 	appearWindow = 60 * time.Second
 	appearPoll   = 250 * time.Millisecond
 )
 
-// WaitGone blocks until the container named name has appeared and then stopped. It is what
-// the Wayland security context holder waits on: the holder is started BEFORE the container
-// (its socket is a bind-mount source, so it has to exist first), which is why this cannot
-// simply be `podman wait` - that fails immediately on a container nobody has created yet.
-//
-// Polling only covers the appearing half. Once the container is there, `podman wait` blocks
-// in one process for the app's whole life, instead of a poll that would fork a podman per
-// interval per running app for hours.
-//
-// A container that lives and dies inside one poll interval is never seen and this returns at
-// the end of the window instead - which costs the holder a minute of idling and nothing else,
-// since the app it was holding the context for is already gone.
+// WaitGone blocks until the container has appeared and then stopped. The Wayland holder starts
+// BEFORE the container (its socket is a bind-mount source), which is why this cannot just be
+// `podman wait`. Polling covers only the appearing half. A container that lives and dies inside one
+// poll interval is never seen, and this returns at the end of the window instead.
 func WaitGone(name string) error {
 	engine := Runtime{}
 	deadline := time.Now().Add(appearWindow)
@@ -553,13 +569,10 @@ func WaitGone(name string) error {
 		}
 		time.Sleep(appearPoll)
 	}
-	// "Gone", not "stopped once". `podman wait` returns on EVERY exit, including one podman
-	// is about to undo: a `--restart on-failure` app's first crash, or a plain
-	// `podman restart`. The caller closes the Wayland close_fd on return, so returning too
-	// early revoked the security context of an app that came straight back - and the
-	// restarted container was then bind-mounted onto a socket the compositor no longer
-	// accepts on, leaving it with no display at all. Re-checking Exists distinguishes the
-	// two: a --rm app disappears, a restarting one does not.
+	// "Gone", not "stopped once". `podman wait` returns on EVERY exit, including one podman is about to
+	// undo. The caller closes the Wayland close_fd on return, so returning early revoked the context of
+	// an app that came straight back, leaving it with no display. A --rm app disappears, a restarting
+	// one does not.
 	for {
 		if err := exec.Command("podman", "wait", name).Run(); err != nil {
 			return err
@@ -567,8 +580,57 @@ func WaitGone(name string) error {
 		if !engine.Exists(name) {
 			return nil
 		}
-		time.Sleep(appearPoll)
+		// It still exists: either restarting, or exited for good. Treating "exists" as "alive" loops
+		// forever for any container without --rm, so give it a restart window and ask whether it is
+		// RUNNING.
+		if engine.restartsWithin(name, restartWindow) {
+			continue
+		}
+		return nil
 	}
+}
+
+// restartWindow bounds how long WaitGone waits for a container to come back after an exit.
+// Podman restarts on its own within a moment, so this only has to outlast that.
+const restartWindow = 3 * time.Second
+
+// restartsWithin reports whether the container is running again before the window elapses.
+// A container that is gone entirely counts as not restarting, which is the same answer.
+func (rt Runtime) restartsWithin(name string, window time.Duration) bool {
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		time.Sleep(appearPoll)
+		switch state, err := isRunning(name); {
+		case err != nil:
+			// Unknown, not dead. Running() returns an empty map on failure and Exists reads any failure as "no
+			// such container", so a held storage lock looked like "the app exited" - and acting on that revokes
+			// a running app's display for good. Keep polling; the window closes on its own.
+			continue
+		case state:
+			return true
+		}
+		if !rt.Exists(name) {
+			return false // genuinely gone, not merely unanswerable
+		}
+	}
+	return false
+}
+
+// isRunning asks podman about ONE container and distinguishes the three answers that matter:
+// running, not running, and could not tell. `podman ps` filtered by name is used rather than
+// `inspect` because a missing container is an empty result rather than an error, so the three
+// cases stay apart.
+func isRunning(name string) (bool, error) {
+	out, err := exec.Command("podman", "ps", "--filter", "name=^"+name+"$", "--format", "{{.Names}}").Output()
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == name {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Do runs a user-facing podman command (stop/restart/inspect/logs) with the host's
@@ -596,12 +658,9 @@ func (Runtime) Running() (map[string]bool, error) {
 	return set, nil
 }
 
-// PIDs returns the host PID of each running container's main process, by name.
-//
-// A query failure is an error here, unlike Running, which degrades to "nothing running" so a
-// list view still loads. This answers a question a machine asks - which app owns a given bus
-// connection - and "nothing is running" and "I could not look" must not arrive as the same
-// answer when the caller's next move is to attribute a capability to an app.
+// PIDs returns the host PID of each running container's main process. A query failure is an error
+// here, unlike Running: "nothing running" and "I could not look" must not arrive as one answer when
+// the caller is about to attribute a bus connection to an app.
 func (Runtime) PIDs() (map[string]int, error) {
 	out, err := exec.Command("podman", "ps", "--format", "{{.Names}} {{.Pid}}").Output()
 	if err != nil {
@@ -636,4 +695,25 @@ func parsePIDs(out string) map[string]int {
 func (Runtime) Logs(name string, tail int) (string, error) {
 	out, err := exec.Command("podman", "logs", "--tail", strconv.Itoa(tail), name).CombinedOutput()
 	return string(out), err
+}
+
+// audioDevices is every ALSA node the directions named, deduplicated: capture and playback on one
+// card share its control node, and the argv is what --dry-run prints.
+func audioDevices(audio schema.AudioMeta) []string {
+	var devices []string
+	for _, list := range [][]string{audio.Playback.Devices, audio.Microphone.Devices} {
+		for _, device := range list {
+			if !slices.Contains(devices, device) {
+				devices = append(devices, device)
+			}
+		}
+	}
+	return devices
+}
+
+// audioUsesSession reports whether any direction asked for the session's own devices, which
+// is what puts the PipeWire socket in the container. Monitor counts: a .monitor source is
+// part of PipeWire's graph, so the socket is the only thing that can deliver it.
+func audioUsesSession(audio schema.AudioMeta) bool {
+	return audio.Playback.Default || audio.Microphone.Default || audio.Monitor.Default
 }
