@@ -29,6 +29,10 @@ import (
 	"github.com/crispuscrew/zinc/common/domain/schema"
 )
 
+// Binary is the tool that makes the namespace. Zinc already depends on it for containers,
+// where podman uses it for rootless networking.
+const Binary = "pasta"
+
 // Applies reports whether this app asked for egress control. Without it the caller runs qemu
 // directly, exactly as before, so an app that states no lists is unaffected.
 func Applies(cfg schema.AppConfig) bool {
@@ -52,7 +56,9 @@ func Command(cfg schema.AppConfig, qemu []string) (argv []string, stdin string, 
 	// the unfiltered namespace that failure would leave behind.
 	script := "set -e\nnft -f -\nexec " + shellJoin(qemu) + "\n"
 
-	args := []string{"--config-net"}
+	// The program itself first: the caller execs argv[0], so a wrapper that names only its
+	// flags runs nothing at all.
+	args := []string{Binary, "--config-net"}
 	args = append(args, forwardFlags(cfg)...)
 	args = append(args, "--", "sh", "-c", script)
 	return args, ruleset, nil

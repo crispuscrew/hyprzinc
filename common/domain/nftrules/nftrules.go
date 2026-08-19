@@ -71,16 +71,38 @@ func Render(cfg schema.AppConfig) string {
 	writeBackstop(&bld, policy)
 	bld.WriteString("\t}\n")
 
-	// Inbound is closed outright. A guest publishes through its runtime's own forwarding rather
-	// than by listening on this namespace, and a chain that is absent is not closed - nftables
-	// applies no policy to a hook with no base chain - so the chain is written even though every
+	// Inbound is closed except for what the app published. A chain that is absent is not closed -
+	// nftables applies no policy to a hook with no base chain - so it is written even when every
 	// rule in it is a refusal.
+	//
+	// The published ports have to be accepted here, and that is not a detail: a forward arrives
+	// in this namespace as a NEW inbound connection, so a chain that only accepts established
+	// traffic drops the very connection ForwardPorts exists to allow. Measured, by a guest that
+	// booted and then never answered on its published port.
 	bld.WriteString("\tchain input {\n")
 	bld.WriteString("\t\ttype filter hook input priority 0; policy drop;\n")
 	bld.WriteString("\t\tct state established,related accept\n")
+	for _, port := range publishedPorts(cfg) {
+		for _, proto := range []string{"tcp", "udp"} {
+			fmt.Fprintf(&bld, "\t\t%s dport { %d } %s\n", proto, port, counted("accept", "published"))
+		}
+	}
 	bld.WriteString("\t}\n")
 	bld.WriteString("}\n")
 	return bld.String()
+}
+
+// publishedPorts are the host-side ports a guest's forwards land on. They are the app's explicit
+// inbound grant, and the only thing this ruleset lets in.
+func publishedPorts(cfg schema.AppConfig) []int {
+	ports := make([]int, 0, len(cfg.VirtualizationMeta.ForwardPorts))
+	for _, forward := range cfg.VirtualizationMeta.ForwardPorts {
+		if forward.HostPort > 0 {
+			ports = append(ports, forward.HostPort)
+		}
+	}
+	sort.Ints(ports)
+	return ports
 }
 
 // listRule pairs a list with its position in the config, which is what a counter is labelled

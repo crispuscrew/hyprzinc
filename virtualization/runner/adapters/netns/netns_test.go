@@ -42,7 +42,11 @@ func TestCommand_LoadsTheRulesetBeforeQemuExecs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if argv[0] != "--config-net" {
+	// argv[0] is what the caller execs, so it has to be the program and not its first flag.
+	if argv[0] != Binary {
+		t.Fatalf("argv[0] must be %q or nothing runs, got: %v", Binary, argv)
+	}
+	if argv[1] != "--config-net" {
 		t.Errorf("the guest must run in a namespace of its own, got: %v", argv)
 	}
 	script := argv[len(argv)-1]

@@ -140,3 +140,19 @@ func TestRender_LabelsCarryTheConfigIndex(t *testing.T) {
 		t.Errorf("the counter should name the config index it came from:\n%s", got)
 	}
 }
+
+// A forward arrives in the namespace as a NEW inbound connection, so a chain that accepts only
+// established traffic drops the very connection ForwardPorts exists to allow. A guest booted and
+// then never answered on its published port until this was here.
+func TestRender_PublishedPortsAreAcceptedInbound(t *testing.T) {
+	cfg := withLists(schema.NetworkList{IPv4CIDR: []string{"1.1.1.1/32"}})
+	cfg.VirtualizationMeta.ForwardPorts = []schema.PortForward{{HostPort: 2222, GuestPort: 22}}
+	got := Render(cfg)
+	if !strings.Contains(got, `tcp dport { 2222 } counter accept comment "published"`) {
+		t.Errorf("the published port must be let in:\n%s", got)
+	}
+	// And nothing else is.
+	if strings.Contains(got, "dport { 22 }") {
+		t.Errorf("the guest-side port is not what arrives here:\n%s", got)
+	}
+}
