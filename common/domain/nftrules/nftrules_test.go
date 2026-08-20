@@ -156,3 +156,28 @@ func TestRender_PublishedPortsAreAcceptedInbound(t *testing.T) {
 		t.Errorf("the guest-side port is not what arrives here:\n%s", got)
 	}
 }
+
+// Every accept in the input chain is loopback exposure on its port. pasta splices the namespace's
+// loopback to the host's, and the splice works by pasta accepting a connection inside the
+// namespace, so this chain's default drop is what closes that hole - measured, by adding one
+// `dport accept` here and reaching a host service. The published ports are the only accepts that
+// belong, and pasta binds those on the host itself.
+func TestRender_InputChainAcceptsNothingBeyondThePublishedPorts(t *testing.T) {
+	cfg := withLists(schema.NetworkList{Blacklist: true, IPv4CIDR: []string{"192.0.2.0/24"}})
+	cfg.VirtualizationMeta.ForwardPorts = []schema.PortForward{{HostPort: 8080, GuestPort: 80}}
+
+	_, after, found := strings.Cut(Render(cfg), "chain input {")
+	if !found {
+		t.Fatal("no input chain was rendered")
+	}
+	body, _, _ := strings.Cut(after, "\n\t}")
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "accept") ||
+			strings.HasPrefix(line, "ct state established,related") ||
+			strings.Contains(line, `comment "published"`) {
+			continue
+		}
+		t.Errorf("this accept reopens the host's loopback on its port: %q", line)
+	}
+}

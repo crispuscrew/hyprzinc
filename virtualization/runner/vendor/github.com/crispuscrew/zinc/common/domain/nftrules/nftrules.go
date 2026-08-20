@@ -48,17 +48,9 @@ func Render(cfg schema.AppConfig) string {
 	policy := chainPolicy(lists)
 	bld.WriteString("\tchain output {\n")
 	fmt.Fprintf(&bld, "\t\ttype filter hook output priority 0; policy %s;\n", policy)
-	// No loopback accept, in either direction, and that is deliberate rather than an omission.
-	//
-	// pasta SPLICES a namespace's loopback to the host's: a connection to 127.0.0.1 inside the
-	// namespace is delivered to 127.0.0.1 on the host. Measured, with this very ruleset - a rule
-	// accepting loopback-addressed egress handed the guest a service bound to the host's
-	// loopback, which is the hole this whole package exists to close. Scoping by address does
-	// not help, because the address genuinely is 127.0.0.1 at both ends.
-	//
-	// A guest needs none of it: it reaches the world through its own emulated NIC, and qemu's
-	// control sockets are unix sockets rather than TCP. What is left is the conntrack accept, so
-	// the replies to what the rules below allowed can come back.
+	// No loopback accept, in either direction. A guest needs none: it reaches the world through
+	// its emulated NIC, and qemu's control sockets are unix sockets rather than TCP. What is left
+	// is the conntrack accept, so replies to what the rules below allowed can come back.
 	bld.WriteString("\t\tct state established,related accept\n")
 
 	writeDNS(&bld, cfg.NetworkMeta.DNSServers)
@@ -75,10 +67,15 @@ func Render(cfg schema.AppConfig) string {
 	// nftables applies no policy to a hook with no base chain - so it is written even when every
 	// rule in it is a refusal.
 	//
-	// The published ports have to be accepted here, and that is not a detail: a forward arrives
-	// in this namespace as a NEW inbound connection, so a chain that only accepts established
-	// traffic drops the very connection ForwardPorts exists to allow. Measured, by a guest that
-	// booted and then never answered on its published port.
+	// This drop is also what closes the loopback hole, which is worth knowing before adding to the
+	// chain. pasta splices the namespace's loopback to the host's, and the splice works by pasta
+	// ACCEPTING the connection inside the namespace, so refusing inbound is what stops it.
+	// Measured: this ruleset plus one `tcp dport <p> accept` here reached a host service on p.
+	// Every accept below is loopback exposure on its port; the only ones are the published ports,
+	// which pasta itself binds on the host, so nothing else of the user's can be behind them.
+	//
+	// They have to be accepted: a forward arrives as a NEW inbound connection, so a chain taking
+	// only established traffic drops the very connection ForwardPorts exists to allow.
 	bld.WriteString("\tchain input {\n")
 	bld.WriteString("\t\ttype filter hook input priority 0; policy drop;\n")
 	bld.WriteString("\t\tct state established,related accept\n")
