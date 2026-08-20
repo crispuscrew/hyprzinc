@@ -956,41 +956,8 @@ inside the hints dictionary that follows it. A zero `NotificationMeta` keeps the
 the launch entirely, and validation refuses the block on an app whose `DBusMeta` cannot reach
 the notification service, since a policy over traffic that cannot happen is not a policy.
 
-**A guest's network.** A VM app declaring `NetworkLists` gets the same fail-closed egress a
-container does. qemu runs inside a network namespace made by `pasta --config-net`, which gives it
-working connectivity and uid 0 of a user namespace, so the ruleset loads with no privilege on the
-host. The ordering is the guarantee: nft loads, and only then does qemu exec, so a guest never
-exists on an unfiltered network - the same window `pod create` closes for a container.
-
-The rules come from `common/domain/nftrules`, shared so that what a `NetworkList` MEANS cannot
-differ between the two runtimes. Only self-scoped egress reaches a guest; sibling links, routing
-through a gateway, forwarding and by-name allowances are refused rather than half-applied, since
-a guest has no siblings and no pod to link to.
-
-pasta splices a namespace's loopback to the host's, so a guest that could reach `127.0.0.1` would
-reach every service the person running it has bound there. What closes that is the **input**
-chain's default drop, not the absence of a loopback accept on egress: the splice works by pasta
-accepting the connection inside the namespace. Measured three ways - a bare pasta namespace
-reaches a host loopback service, this ruleset does not, and adding one `tcp dport <p> accept` to
-the input chain reaches it again. Every accept in that chain is therefore loopback exposure on its
-port, which is why the only ones are the published ports, and pasta itself binds those on the host.
-
-`ForwardPorts` is published by pasta rather than by qemu's `hostfwd`. A forward is delivered to the
-namespace's interface address, so the guest's `hostfwd` binds every address of the namespace rather
-than its loopback, where nothing arrives. That is narrower than it reads: the only way in is a port
-pasta was told to forward, verified by an undeclared port staying unreachable from the host.
-
-`DNSServers` is delivered as well as enforced. qemu's user-mode networking takes its upstream
-resolver from `/etc/resolv.conf`, so a guest whose lists are allowances would ask the host's
-resolver and have its own rules drop the query - it resolved nothing. The namespace gets a
-resolv.conf naming the declared servers, bind-mounted before qemu execs: no cooperation from the
-guest, so it works for one with no cloud-init, and pasta's mount namespace does not propagate.
-`zc` warns when a guest's lists are allowances and no resolver is named.
-
-`zvr net <app>` reads the counters back, as `zcr net` does for a container, and the parser is
-shared with it. Posture is observed from the namespace the guest is actually in rather than from
-its config, for the same reason `zcr net` reads pod membership: an edited YAML must not change what
-is reported about a guest already running.
+A guest's network is section 10.5: the model is the same, but what carries it is
+qemu and pasta rather than a pod.
 
 ### 6.6 Dependency startup ordering
 
@@ -1297,9 +1264,10 @@ managed save, which `zvr` does not have.
 ### 10.2 How a guest runs
 
 A launch is: validate the config, verify the base image against its pinned digest, create
-the app's overlay if it has none, rebuild its cloud-init seed, compose the argv, start the
-process. Nothing is created for a config that does not validate, and no guest starts from a
-base image that no longer matches its digest.
+the app's overlay if it has none, rebuild its cloud-init seed, compose the argv, wrap it in a
+filtered network namespace if the app declares one (10.5), start the process. Nothing is
+created for a config that does not validate, and no guest starts from a base image that no
+longer matches its digest.
 
 **Disks are copy-on-write.** The base image named by `ImageMeta.Image` is never opened for
 writing; each app gets its own qcow2 overlay backed by it, so `zvr reset` deletes the overlay
@@ -1318,6 +1286,12 @@ because they can rewrite the cache alongside it.
 so a graceful stop lets the guest's own OS flush and unmount rather than being killed
 mid-write; SIGTERM and then SIGKILL stand behind it. A pidfile is checked against `/proc`
 before anything is signalled, because pids are recycled.
+
+The pid in that file is written by `zvr`, not by qemu, and for a filtered guest the difference
+is the whole thing: pasta's namespace is a PID namespace too, so qemu is pid 1 inside it and
+`-pidfile` records `1` - which on the host is init. The usable pid is found from the host side
+and stored instead. Signalling what qemu wrote meant signalling nothing, and every stop left a
+pasta and a qemu behind.
 
 **The guest's hardware is exactly what the config asked for.** qemu is started with
 `-nodefaults`, so nothing arrives merely because it was compiled in, and the host process is
@@ -1412,6 +1386,55 @@ author the app against it. That keeps the rule that a pinned base is never writt
 The install seeds its machine identity from the disk's own path, because it has no app name
 yet and a shared placeholder would give every install on every host the same identity at the
 one moment it matters most.
+
+### 10.5 The guest's network
+
+A VM app declaring `NetworkLists` gets the same fail-closed egress a container does. qemu runs
+inside a network namespace made by `pasta --config-net`, which gives it working connectivity and
+uid 0 of a user namespace, so the ruleset loads with no privilege on the host. The ordering is the
+guarantee: nft loads, and only then does qemu exec, so a guest never exists on an unfiltered
+network - the same window `pod create` closes for a container.
+
+The rules come from `common/domain/nftrules`, shared so that what a `NetworkList` MEANS cannot
+differ between the two runtimes.
+
+**The loopback hole, and what actually closes it.** pasta splices a namespace's loopback to the
+host's, so a guest that could reach `127.0.0.1` would reach every service the person running it
+has bound there. What closes that is the **input** chain's default drop, not the absence of a
+loopback accept on egress: the splice works by pasta accepting the connection inside the
+namespace. Measured three ways - a bare pasta namespace reaches a host loopback service, this
+ruleset does not, and adding one `tcp dport <p> accept` to the input chain reaches it again.
+Every accept in that chain is therefore loopback exposure on its port, which is why the only ones
+are the published ports, and pasta itself binds those on the host.
+
+**Forwards.** `ForwardPorts` is published by pasta rather than by qemu's `hostfwd`. A forward is
+delivered to the namespace's interface address, so the guest's `hostfwd` binds every address of
+the namespace rather than its loopback, where nothing arrives. That is narrower than it reads:
+the only way in is a port pasta was told to forward, verified by an undeclared port staying
+unreachable from the host.
+
+**DNS is delivered, not only enforced.** qemu's user-mode networking takes its upstream resolver
+from `/etc/resolv.conf`, so a guest whose lists are allowances would ask the host's resolver and
+have its own rules drop the query - it resolved nothing. The namespace gets a resolv.conf naming
+the declared servers, bind-mounted before qemu execs: no cooperation from the guest, so it works
+for one with no cloud-init, and pasta's mount namespace does not propagate. `zc` warns when a
+guest's lists are allowances and no resolver is named.
+
+**Reading it back.** `zvr net <app>` reports what the ruleset has counted, as `zcr net` does for a
+container, and the parser is shared with it. Posture is observed from the namespace the guest is
+actually in rather than from its config, for the same reason `zcr net` reads pod membership: an
+edited YAML must not change what is reported about a guest already running.
+
+**What a guest does not get.** Only self-scoped egress. Sibling links, routing through a gateway,
+forwarding and by-name allowances are refused at validation rather than half-applied, because a
+guest has no siblings and no pod to link to. A guest that declares no lists at all is
+*unfiltered* - it keeps qemu's user-mode NAT and reaches whatever the host can. That is the
+opposite of a container with no lists, which gets `--network none` and is the most restricted
+posture there is; `zvr net` says which of the two a running guest is in, in those words.
+
+**What is not supervised.** Nothing watches a guest, so one shut down from inside leaves its swtpm
+running, and `zvr` has no launch lock of the kind `zcr` uses to serialise a relaunch. Both are the
+guest-side twins of container fixes, recorded rather than implied to work.
 
 ## 11. Host Surface (minimal)
 
@@ -1539,10 +1562,11 @@ the network lock-down applies rules with (6.4).
 | 2 | GPU passthrough weakens isolation, is granted unless a config opts out, and has no memory cap (see 5.4 on `dmem`) | `DisableGpuAccess: true` denies it; opt-out is deliberate, and it is the one grant not written into a config when it applies (5.4) |
 | 3 | Image tags can be poisoned upstream | third-party images must be digest-pinned; launch is `--pull never` (5.5) |
 | 4 | Derived images are per-machine, not digest-pinned | their guarantee is the pinned base plus the visible install lines (7) |
-| 5 | Some schema fields are validated but not yet enforced at runtime. Resources and internal user are enforced; notifications are refused outright rather than ignored | called out explicitly in section 3; on the roadmap, fail-loud where relevant |
+| 5 | Every schema field is enforced by something as of 0.10.0; what remains unenforced is named, not silent | the exceptions are listed in the changelog's Still open, and validation says so at authoring time |
 | 6 | Host-scoped egress, gateway/multi-homing, and mixing a sibling link with other networking are unsupported | fail-closed: rejected at launch, never mis-enforced (6.5) |
 | 7 | The netfilter helper runs with namespaced `CAP_NET_ADMIN` | namespaced to the pod's userns, harmless on the host; the image is local and `--pull never` (6.4) |
-| 8 | VM apps have no egress filtering, only explicit port forwards | the nftables model lives in a container netns and does not reach a guest; rejected rather than mis-enforced (10) |
+| 8 | A guest's egress covers self-scoped lists only; sibling links, gateways and by-name allowances do not reach it | fail-closed: refused at validation rather than half-applied (10.5) |
+| 9 | Nothing supervises a guest: one shut down from inside leaves its swtpm running, and `zvr` has no launch lock | `zvr stop` tears down correctly; the gap is a guest that exits on its own (10.5) |
 
 ---
 

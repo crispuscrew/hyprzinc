@@ -26,23 +26,22 @@ migration is in the changelog.
 
 ## Cutting a release
 
-The build is reproducible - CI runs `make repro` for every module on every push, which builds
-twice and asserts identical bytes - so a checksum is something anyone can regenerate rather than
-something they have to take on trust. Two commands turn that into something a person who clones
-can check:
+One command:
 
 ```
-make -f release.mk checksums          # build every tool, write SHA256SUMS
 make -f release.mk tag VERSION=0.10.0 # signed, annotated tag
 ```
 
-`SHA256SUMS` is committed on the release branch, so the tag covers it. Anyone can then run
-`make -f release.mk verify`, which rebuilds every tool and fails if a binary does not hash to
-what the file records.
+The tag is signed, and this refuses rather than falling back to an unsigned one: a release that
+silently was not signed is worse than one that failed to be, because only the first is invisible.
+It needs `git config user.signingkey` (with `gpg.format=ssh` for an SSH key).
 
-The tag is signed, and `make -f release.mk tag` refuses rather than falling back to an unsigned
-one: a release that silently was not signed is worse than one that failed to be, because only the
-first is invisible. It needs `git config user.signingkey` (with `gpg.format=ssh` for an SSH key).
+Pushing the tag is what produces `SHA256SUMS`. A tag-gated CI job builds every tool in its pinned
+container, records the bytes, and attaches the file to the release. It is deliberately not made by
+whoever cuts the tag: a checksum written on the machine that also built the binaries proves only
+that the machine agrees with itself. The build is reproducible - CI runs `make repro` for every
+module on every push, which builds twice and asserts identical bytes - so anyone can rebuild and
+compare against what CI published. That is the whole reason the number is worth having.
 
 Version numbers live in three places that have to move together, or the flake job fails on the
 one that did not: `flake.nix`, the assertion in `.github/workflows/ci.yml`, and the table above.

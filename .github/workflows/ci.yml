@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: ['**']
+    tags: ['v*']
   pull_request:
 
 concurrency:
@@ -124,3 +125,47 @@ jobs:
         # A runner without rootless nftables can gate just the network scenario with:
         #   env:
         #     ZINC_E2E_NO_NET: "1"
+
+  # Checksums are made here rather than by whoever cuts the tag, because a checksum written on
+  # the machine that built the binaries proves only that the machine agrees with itself. The
+  # builds are reproducible, so this is a number anyone can regenerate and compare - which is the
+  # whole reason it is worth publishing.
+  checksums:
+    name: release checksums
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, e2e]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure podman
+        run: .github/scripts/ensure-podman.sh
+      - name: build every tool in its pinned container
+        run: |
+          for tool in creator container/runner virtualization/runner launcher/tui launcher/gui; do
+            make -C "$tool" build
+          done
+      # Sorted and relative to the repo root, so two runs on two machines produce the same file
+      # and a difference means the bytes differ rather than the listing order.
+      - name: record the bytes
+        run: |
+          printf '%s\n' \
+            creator/bin/zc \
+            container/runner/bin/zcr \
+            virtualization/runner/bin/zvr \
+            launcher/tui/bin/zlt \
+            launcher/gui/bin/zlg \
+            | LC_ALL=C sort | xargs sha256sum > SHA256SUMS
+          cat SHA256SUMS
+      # `gh` rather than a release action: it ships on the runner, so this adds no third-party
+      # dependency to the one job whose whole purpose is to be trustworthy. The release is created
+      # if the tag has none yet, so pushing a tag is enough on its own.
+      - name: publish them with the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "$tag" --notes "See CHANGELOG.md for what is in this release."
+          gh release upload "$tag" SHA256SUMS --clobber

@@ -122,11 +122,12 @@ were silently ignored, and the audio directions were a claim rather than a contr
   needed the ruleset to accept no loopback at all, because pasta splices a namespace's loopback
   to the host's and scoping by address does not help.
 
-- **Releases can be verified.** `make -f release.mk checksums` records the bytes of every shipped
-  binary and `verify` rebuilds and checks them, which is only worth having because CI already
-  proves the builds reproducible. `make -f release.mk tag` makes the tag a signed one, and
-  refuses rather than falling back to unsigned - a release that silently was not signed is worse
-  than one that failed to be.
+- **Releases can be verified.** Pushing a tag makes CI build every tool in its pinned container
+  and publish `SHA256SUMS` with the release, which is only worth having because CI already proves
+  the builds reproducible. Not written by whoever cuts the tag: a checksum from the machine that
+  built the binaries proves only that the machine agrees with itself. `make -f release.mk tag`
+  makes the tag a signed one, and refuses rather than falling back to unsigned - a release that
+  silently was not signed is worse than one that failed to be.
 
 - **`zcr net` reports what an app is attached to, not what its config asked for.** The posture
   was derived from the file at report time, so editing a YAML changed what the attestation

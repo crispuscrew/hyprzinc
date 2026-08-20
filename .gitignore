@@ -21,4 +21,3 @@ coverage.*
 
 # Release checksums are generated on the release branch (make -f release.mk checksums),
 # where the tag covers them. On dev they would churn on every build.
-SHA256SUMS
