@@ -264,6 +264,10 @@ a pin covers the bytes of a file, and a file can point somewhere else.
   structural rather than unfinished work: a sink's `.monitor` is a set of ports on the sink an
   app plays to, not an object of its own, so denying it would deny playback. Closing it needs a
   virtual sink per app. Validation says exactly this rather than warning about audio generally.
+- A guest is not supervised the way a container now is. Nothing runs when a guest shuts itself
+  down from inside, so its swtpm outlives the machine it backed, and `zvr` has no launch lock, so
+  the already-running refusal keeps the race `zcr` closed this release. Both are the guest-side
+  twins of fixes above.
 - A guest's egress covers self-scoped lists only. Sibling links, routing through a gateway and
   by-name allowances are refused for a VM app rather than half-applied; the container renderer
   still holds that vocabulary, and `common/domain/nftrules` is the shape it can collapse into
