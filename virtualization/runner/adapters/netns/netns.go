@@ -44,7 +44,7 @@ func Applies(cfg schema.AppConfig) bool {
 // The ruleset is passed on stdin rather than written to a file: it is generated per launch from
 // the config, and a file would be one more thing to create, secure and remove - and one more
 // thing that could be edited between being written and being read.
-func Command(cfg schema.AppConfig, qemu []string) (argv []string, stdin string, err error) {
+func Command(cfg schema.AppConfig, qemu []string, resolvConf string) (argv []string, stdin string, err error) {
 	if !Applies(cfg) {
 		return qemu, "", nil
 	}
@@ -54,7 +54,7 @@ func Command(cfg schema.AppConfig, qemu []string) (argv []string, stdin string, 
 	}
 	// `set -e` so a ruleset that will not load stops the launch instead of booting a guest into
 	// the unfiltered namespace that failure would leave behind.
-	script := "set -e\nnft -f -\nexec " + shellJoin(qemu) + "\n"
+	script := "set -e\nnft -f -\n" + resolvLine(cfg, resolvConf) + "exec " + shellJoin(qemu) + "\n"
 
 	// The program itself first: the caller execs argv[0], so a wrapper that names only its
 	// flags runs nothing at all.
@@ -62,6 +62,28 @@ func Command(cfg schema.AppConfig, qemu []string) (argv []string, stdin string, 
 	args = append(args, forwardFlags(cfg)...)
 	args = append(args, "--", "sh", "-c", script)
 	return args, ruleset, nil
+}
+
+// resolvLine points qemu's own resolver at the servers the config declared.
+//
+// DNSServers was enforced and never delivered: qemu's user networking takes its upstream resolver
+// from /etc/resolv.conf, and the rules drop DNS to anything undeclared, so a whitelist guest
+// resolved nothing. A bind mount rather than a guest-side setting, so a guest with no cloud-init
+// gets it too, and it is confined because pasta's mount namespace does not propagate.
+func resolvLine(cfg schema.AppConfig, resolvConf string) string {
+	if resolvConf == "" || len(cfg.NetworkMeta.DNSServers) == 0 {
+		return ""
+	}
+	return "mount --bind " + shellQuote(resolvConf) + " /etc/resolv.conf\n"
+}
+
+// ResolvConf is what Resolv should hold: the declared servers, in order.
+func ResolvConf(cfg schema.AppConfig) string {
+	var bld strings.Builder
+	for _, server := range cfg.NetworkMeta.DNSServers {
+		fmt.Fprintf(&bld, "nameserver %s\n", server)
+	}
+	return bld.String()
 }
 
 // forwardFlags publishes the guest's ports on the host.
@@ -88,7 +110,11 @@ func forwardFlags(cfg schema.AppConfig) []string {
 func shellJoin(args []string) string {
 	quoted := make([]string, 0, len(args))
 	for _, arg := range args {
-		quoted = append(quoted, "'"+strings.ReplaceAll(arg, "'", `'\''`)+"'")
+		quoted = append(quoted, shellQuote(arg))
 	}
 	return strings.Join(quoted, " ")
+}
+
+func shellQuote(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
 }

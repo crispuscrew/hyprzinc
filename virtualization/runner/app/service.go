@@ -50,7 +50,7 @@ func (svc Service) Plan(cfg schema.AppConfig) (argv []string, ruleset string, er
 	if err != nil {
 		return nil, "", err
 	}
-	return netns.Command(cfg, qemu.Args(cfg, layout))
+	return netns.Command(cfg, qemu.Args(cfg, layout), svc.Paths.Resolv(cfg.AppNameID))
 }
 
 // Run boots an app's guest.
@@ -103,7 +103,13 @@ func (svc Service) start(cfg schema.AppConfig, installing bool) error {
 	// A guest that declares egress lists runs inside a namespace those lists are enforced in,
 	// with the ruleset loaded before qemu execs - so there is no window in which the guest has
 	// an unfiltered network, for the same reason a container's pod is locked before its app.
-	argv, ruleset, err := netns.Command(cfg, qemu.Args(cfg, layout))
+	resolvConf := svc.Paths.Resolv(cfg.AppNameID)
+	if body := netns.ResolvConf(cfg); body != "" && netns.Applies(cfg) {
+		if err := os.WriteFile(resolvConf, []byte(body), 0o600); err != nil {
+			return fmt.Errorf("write the guest's resolver: %w", err)
+		}
+	}
+	argv, ruleset, err := netns.Command(cfg, qemu.Args(cfg, layout), resolvConf)
 	if err != nil {
 		return err
 	}
@@ -161,6 +167,9 @@ func (svc Service) Stop(name string, force bool, timeout time.Duration) error {
 	}
 	err := svc.Runtime.Stop(name, force, timeout)
 	firmware.StopTPM(svc.Paths.TPMSocket(name), svc.Paths.TPMPID(name))
+	// Not in Runtime.clean: that also runs at START, and would delete the resolver this
+	// launch had just written.
+	_ = os.Remove(svc.Paths.Resolv(name))
 	return err
 }
 

@@ -65,6 +65,9 @@ func (paths Paths) PIDFile(app string) string { return filepath.Join(paths.RunDi
 func (paths Paths) QMP(app string) string     { return filepath.Join(paths.RunDir, app+".qmp") }
 func (paths Paths) Serial(app string) string  { return filepath.Join(paths.RunDir, app+".serial") }
 
+// Resolv is the resolver a filtered guest's qemu reads. See netns.Command.
+func (paths Paths) Resolv(app string) string { return filepath.Join(paths.RunDir, app+".resolv.conf") }
+
 // Layout gathers the paths qemu itself needs. seeded is false for an app whose cloud-init
 // is disabled, which leaves the seed drive off the command line entirely.
 func (paths Paths) Layout(app string, seeded bool) qemu.Layout {

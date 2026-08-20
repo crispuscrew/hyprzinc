@@ -102,6 +102,11 @@ were silently ignored, and the audio directions were a claim rather than a contr
   untrusted GUI app. Declaring `NetworkLists` on a VM app now runs qemu inside a namespace with
   an nftables ruleset loaded before it starts, so a guest never exists on an unfiltered network.
 
+  `DNSServers` is delivered as well as enforced: qemu's user networking takes its upstream
+  resolver from `/etc/resolv.conf`, so the namespace gets one naming the declared servers. Without
+  it a whitelist guest resolved nothing, since the rules dropped the query the host's resolver
+  would have answered.
+
   The rules come from a renderer in `common`, shared so a `NetworkList` cannot mean two things.
   Only self-scoped egress reaches a guest; links, routing and by-name allowances are refused
   rather than half-applied. Measured against a real namespace: the allowed destination is
