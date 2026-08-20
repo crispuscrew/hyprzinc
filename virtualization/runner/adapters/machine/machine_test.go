@@ -1,37 +1,87 @@
 package machine
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
 
+// TestMain doubles as the fake guest and the fake wrapper.
+//
+// Re-executing this binary rather than copying a shell: /bin/sh is busybox on many images, and
+// busybox dispatches on argv[0], so a copy named qemu-system-x86_64 is not an applet it knows and
+// exits at once. That passed on a host whose /bin/sh is bash and failed in the pinned container.
+func TestMain(m *testing.M) {
+	switch os.Getenv("ZINC_TEST_HELPER") {
+	case "guest":
+		// Nothing to do but stay alive and be identified by its argv.
+		time.Sleep(10 * time.Minute)
+		return
+	case "wrapper":
+		guest := exec.Command(os.Getenv("ZINC_TEST_GUEST"), "-name", os.Getenv("ZINC_TEST_APP"))
+		guest.Env = append(os.Environ(), "ZINC_TEST_HELPER=guest")
+		if err := guest.Start(); err != nil {
+			os.Exit(1)
+		}
+		// Reaped, as pasta reaps the qemu it wraps. Without this a killed guest stays a zombie,
+		// and a zombie still answers signal 0 - so it would read as still running wherever the
+		// orphan is not reaped for us.
+		go func() { _ = guest.Wait() }()
+		time.Sleep(10 * time.Minute)
+		return
+	}
+	dir, err := os.MkdirTemp("", "zinc-machine")
+	if err != nil {
+		panic(err)
+	}
+	if err := copySelf(filepath.Join(dir, "qemu-system-x86_64")); err != nil {
+		panic(err)
+	}
+	fakeGuestBin = filepath.Join(dir, "qemu-system-x86_64")
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// fakeGuestBin is this test binary under a name isGuestProcess will accept as qemu.
+var fakeGuestBin string
+
+func copySelf(dst string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	body, err := os.ReadFile(self)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, body, 0o700)
+}
+
 // fakeGuest starts a process that looks like this app's qemu to isGuestProcess: a binary whose
-// name carries qemu-system, invoked with `-name <app>`. A copy of /bin/sh is enough, and using
-// a real process rather than a fixture is the point - the thing under test reads /proc.
+// name carries qemu-system, invoked with `-name <app>`. A real process rather than a fixture,
+// because the thing under test reads /proc.
 func fakeGuest(t *testing.T, app string, wrapped bool) (started int, guest int) {
 	t.Helper()
-	shell, err := os.ReadFile("/bin/sh")
-	if err != nil {
-		t.Skip("no /bin/sh to copy")
-	}
-	fake := filepath.Join(t.TempDir(), "qemu-system-x86_64")
-	if err := os.WriteFile(fake, shell, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// `& wait` rather than a bare command: a shell handed one simple command execs it in
-	// place, which would replace the very argv that identifies this process.
-	const idle = "sleep 300 & wait"
-	args := []string{fake, "-c", idle, "-name", app}
+	var cmd *exec.Cmd
 	if wrapped {
 		// A wrapper on the host with the guest as its child, which is the shape pasta makes.
-		args = []string{"/bin/sh", "-c", fmt.Sprintf("%q -c %q -name %s & wait", fake, idle, app)}
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd = exec.Command(self)
+		cmd.Env = append(os.Environ(),
+			"ZINC_TEST_HELPER=wrapper", "ZINC_TEST_GUEST="+fakeGuestBin, "ZINC_TEST_APP="+app)
+	} else {
+		cmd = exec.Command(fakeGuestBin, "-name", app)
+		cmd.Env = append(os.Environ(), "ZINC_TEST_HELPER=guest")
 	}
-	cmd := exec.Command(args[0], args[1:]...)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -111,12 +161,33 @@ func TestTerminate_TakesTheWrappedGuestToo(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if !alive(started) && !alive(guest) {
+		if !running(started) && !running(guest) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Errorf("after terminate: wrapper alive=%v, guest alive=%v", alive(started), alive(guest))
+	t.Errorf("after terminate: wrapper %s, guest %s", procState(started), procState(guest))
+}
+
+// running is "not gone and not a zombie". alive() answers signal 0, which a zombie still accepts,
+// so whether a killed process reads as gone would otherwise depend on how quickly whoever inherits
+// it reaps it - which differs between this host and the pinned container.
+func running(pid int) bool {
+	state := procState(pid)
+	return state != "gone" && state != "Z"
+}
+
+func procState(pid int) string {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return "gone"
+	}
+	// The comm field is parenthesised and may itself contain spaces, so read after the last ')'.
+	fields := strings.Fields(string(data)[strings.LastIndex(string(data), ")")+1:])
+	if len(fields) == 0 {
+		return "unknown"
+	}
+	return fields[0]
 }
 
 // childrenOf reports host pids. A process with no children has none, rather than an error the
