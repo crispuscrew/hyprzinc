@@ -125,12 +125,16 @@ func cmdRun(svc app.Service, argv []string) error {
 		return err
 	}
 	if flags["--dry-run"] {
-		args, err := svc.Plan(cfg)
+		args, ruleset, err := svc.Plan(cfg)
 		if err != nil {
 			return err
 		}
-		// Printed as one line so it can be copied and run as-is, which is the point: the
-		// operator can see and reproduce exactly what zvr would have started.
+		// The command is one line so it can be copied and run as-is. A filtered guest's rules
+		// are printed above it, because they arrive on stdin and would otherwise be the one
+		// part of the launch a dry-run did not show.
+		if ruleset != "" {
+			fmt.Printf("# loaded into the guest's namespace before qemu starts:\n%s\n", ruleset)
+		}
 		fmt.Println(qemu.Display(args))
 		return nil
 	}

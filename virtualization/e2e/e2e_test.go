@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -79,7 +80,9 @@ func TestVMEndToEnd(t *testing.T) {
 
 	// Whatever happens below, do not leave a guest running on the developer's machine.
 	t.Cleanup(func() {
-		_, _ = run(zvr, "stop", appName, "--force")
+		for _, app := range []string{appName, appName + "-filtered", appName + "-pinned"} {
+			_, _ = run(zvr, "stop", app, "--force")
+		}
 	})
 
 	digest, err := run(zvr, "pin", base)
@@ -205,12 +208,6 @@ func TestVMEndToEnd(t *testing.T) {
 		if _, err := exec.LookPath("pasta"); err != nil {
 			t.Skip("pasta not installed; skipping the filtered-guest scenario")
 		}
-		// Skipped deliberately, and this is the honest state rather than a test that is quietly
-		// red: a filtered guest boots and answers on its published port when run by hand, but
-		// this scenario does not pass reliably, and stopping one has left its pasta and qemu
-		// behind across runs. Until that is root-caused the guarantee is proven at the ruleset
-		// level (unit tests, plus a measured run against a real namespace) and not end to end.
-		t.Skip("filtered-guest teardown is not reliable yet; see CHANGELOG Still open")
 		filtered := appName + "-filtered"
 		port := sshPort + 1
 		out, err := run(zc, "new", filtered, "--vm",
@@ -250,7 +247,7 @@ func TestVMEndToEnd(t *testing.T) {
 		if out, err := run(zvr, "run", filtered); err != nil {
 			t.Fatalf("zvr run (filtered): %v\n%s", err, out)
 		}
-		defer func() { _, _ = run(zvr, "stop", filtered) }()
+		defer func() { _, _ = run(zvr, "stop", filtered, "--force") }()
 
 		if out, err := run(zvr, "status", filtered); err != nil || !strings.Contains(out, "running") {
 			t.Fatalf("a filtered guest should be running, got %q (%v)", out, err)
@@ -261,6 +258,16 @@ func TestVMEndToEnd(t *testing.T) {
 		if !waitForPort(port, 120*time.Second) {
 			t.Fatal("the filtered guest never answered on its forwarded port within 120s")
 		}
+
+		// Stopping has to take the namespace with it. This is the half that was broken: qemu is
+		// pid 1 inside pasta's PID namespace, so its pidfile said 1, and zvr signalled init.
+		if out, err := run(zvr, "stop", filtered); err != nil {
+			t.Fatalf("zvr stop (filtered): %v\n%s", err, out)
+		}
+		if out, _ := run(zvr, "ps"); strings.Contains(out, filtered) {
+			t.Errorf("ps still lists the filtered guest after stop: %s", out)
+		}
+		assertNothingLeftBehind(t, filtered)
 	})
 
 	t.Run("graceful_stop", func(t *testing.T) {
@@ -294,6 +301,54 @@ func TestVMEndToEnd(t *testing.T) {
 }
 
 // requireHost skips unless this machine can actually run an accelerated guest.
+// assertNothingLeftBehind fails if a stopped guest still has a process on this host.
+//
+// `zvr ps` cannot answer this - it reads pidfiles, which stop removes - so a leaked guest is
+// invisible to it, and a pasta wrapper always was. Only /proc answers "is anything running".
+func assertNothingLeftBehind(t *testing.T, app string) {
+	t.Helper()
+	// A moment for a guest that has just been signalled, and for the pasta whose namespace
+	// empties as a result: neither exits the instant stop returns.
+	deadline := time.Now().Add(10 * time.Second)
+	var left []string
+	for time.Now().Before(deadline) {
+		if left = survivors(app); len(left) == 0 {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Errorf("%s was stopped but these processes are still running:\n  %s",
+		app, strings.Join(left, "\n  "))
+}
+
+// survivors lists this host's processes belonging to one app's guest: its qemu, and the
+// pasta whose command line carries the qemu argv it was asked to wrap.
+func survivors(app string) []string {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var found []string
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil {
+			continue // exited while we were looking, or not ours
+		}
+		argv := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+		if len(argv) == 0 || !strings.Contains(strings.Join(argv, " "), app) {
+			continue
+		}
+		if strings.Contains(argv[0], "qemu-system") || strings.Contains(argv[0], "pasta") {
+			found = append(found, fmt.Sprintf("pid %d: %s", pid, strings.Join(argv, " ")))
+		}
+	}
+	return found
+}
+
 func requireHost(t *testing.T) {
 	t.Helper()
 	for _, binary := range []string{"qemu-system-x86_64", "qemu-img", "xorriso"} {

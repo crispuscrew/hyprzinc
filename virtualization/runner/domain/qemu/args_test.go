@@ -151,6 +151,28 @@ func TestArgs_ForwardsBindLoopbackOnly(t *testing.T) {
 	}
 }
 
+// A namespaced guest binds every address instead, which is narrower rather than wider: the
+// addresses are the namespace's. pasta delivers a forward to the namespace's interface
+// address and splices its loopback to the host's, so a loopback bind is an address nothing
+// ever arrives on - measured, by a filtered guest that booted and never answered.
+func TestArgs_NamespacedForwardsBindWherePastaDelivers(t *testing.T) {
+	cfg := testCfg()
+	cfg.VirtualizationMeta.ForwardPorts = []schema.PortForward{{HostPort: 2222, GuestPort: 22}}
+	layout := testLayout()
+	layout.Namespaced = true
+
+	netdev := pairs(Args(cfg, layout), "-netdev")
+	if len(netdev) != 1 {
+		t.Fatalf("-netdev = %v, want exactly one", netdev)
+	}
+	if !strings.Contains(netdev[0], "hostfwd=tcp::2222-:22") {
+		t.Errorf("-netdev %q should bind every address of the namespace", netdev[0])
+	}
+	if strings.Contains(netdev[0], "127.0.0.1") {
+		t.Errorf("-netdev %q binds the namespace's loopback, where pasta delivers nothing", netdev[0])
+	}
+}
+
 // An app with no forwards still gets outbound access, and nothing inbound.
 func TestArgs_NoForwardsMeansNoInbound(t *testing.T) {
 	netdev := pairs(Args(testCfg(), testLayout()), "-netdev")

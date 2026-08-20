@@ -19,10 +19,10 @@ import (
 )
 
 const (
-	// startGrace is how long to watch a freshly started guest before declaring it up. A
-	// bad command line kills qemu in milliseconds, so this is long enough to catch that
-	// without making a good launch feel slow.
-	startGrace   = 2 * time.Second
+	// startGrace is how long to watch a freshly started guest before declaring it up.
+	// Generous costs nothing - a rejected command line kills qemu outright and is noticed at
+	// once - and a filtered guest has pasta's setup and an nft load to get through first.
+	startGrace   = 15 * time.Second
 	pollInterval = 50 * time.Millisecond
 	// termGrace is how long a guest gets after SIGTERM before SIGKILL. qemu closes its
 	// disks on SIGTERM, so this is about letting it finish that, not about the guest.
@@ -84,11 +84,70 @@ func (runtime Runtime) Start(app string, args []string, extraEnv []string, stdin
 	// per launch.
 	go func() { _ = command.Wait() }()
 
-	if err := runtime.confirmStarted(app, command.Process.Pid); err != nil {
+	// Every failure from here on has to take the started process with it, or the launch is
+	// abandoned while the guest keeps running with nothing tracking it.
+	abandon := func(err error) error {
+		terminate(command.Process.Pid)
 		runtime.clean(app)
 		return err
 	}
+	if err := runtime.confirmStarted(app, command.Process.Pid); err != nil {
+		return abandon(err)
+	}
+	// Replace what qemu wrote with a pid this host can actually signal: a guest that cannot
+	// be signalled cannot be stopped.
+	pid := guestPID(command.Process.Pid, app)
+	if pid == 0 {
+		return abandon(fmt.Errorf("started %s but could not find its guest process; see %s", app, runtime.Paths.Log(app)))
+	}
+	if err := os.WriteFile(runtime.Paths.PIDFile(app), []byte(strconv.Itoa(pid)+"\n"), 0o600); err != nil {
+		return abandon(fmt.Errorf("record the guest pid: %w", err))
+	}
 	return nil
+}
+
+// guestPID is the host-visible pid of the qemu process zvr started.
+//
+// A filtered guest is pid 1 inside pasta's PID namespace, so 1 is what it writes to its own
+// -pidfile: init, as read on the host. The usable pid is found from this side instead, and
+// isGuestProcess is what tells the wrapper from the guest it wraps.
+func guestPID(started int, app string) int {
+	if isGuestProcess(started, app) {
+		return started // not wrapped: zvr started qemu itself
+	}
+	for _, child := range childrenOf(started) {
+		if isGuestProcess(child, app) {
+			return child
+		}
+	}
+	return 0
+}
+
+// childrenOf lists a process's children as the host numbers them.
+func childrenOf(pid int) []int {
+	name := strconv.Itoa(pid)
+	data, err := os.ReadFile(filepath.Join("/proc", name, "task", name, "children"))
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, field := range strings.Fields(string(data)) {
+		if child, err := strconv.Atoi(field); err == nil {
+			pids = append(pids, child)
+		}
+	}
+	return pids
+}
+
+// terminate tears down a launch that did not come up, innermost first.
+//
+// Order matters: killing the wrapper first orphans what is inside its namespace, because the
+// namespace outlives its creator. SIGKILL, since a guest that never started has nothing to flush.
+func terminate(started int) {
+	for _, child := range childrenOf(started) {
+		_ = syscall.Kill(child, syscall.SIGKILL)
+	}
+	_ = syscall.Kill(started, syscall.SIGKILL)
 }
 
 // confirmStarted watches a new guest long enough to tell a successful boot from a command

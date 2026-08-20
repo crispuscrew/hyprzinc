@@ -255,6 +255,9 @@ a pin covers the bytes of a file, and a file can point somewhere else.
   by-name allowances are refused for a VM app rather than half-applied; the container renderer
   still holds that vocabulary, and `common/domain/nftrules` is the shape it can collapse into
   when it reaches guests too.
+- A guest's counters cannot be read back. The rules carry the same labels a container's do, and
+  the namespace is reachable from the host, but there is no `zvr net counters` and the parser
+  that would serve it lives in the container runner rather than in `common`.
 
 ## [0.9.1] - 2026-07-31
 

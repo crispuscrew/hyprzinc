@@ -38,18 +38,19 @@ func New(store *fs.Store, layout paths.Paths) Service {
 	return Service{Store: store, Paths: layout, Runtime: machine.Runtime{Paths: layout}}
 }
 
-// Plan returns the exact command line a launch would run, without touching anything. It
-// is what --dry-run prints: the whole point is that an operator can read what their
-// config turns into before a guest exists.
-func (svc Service) Plan(cfg schema.AppConfig) ([]string, error) {
+// Plan returns the exact command line a launch would run, and the ruleset it would load,
+// without touching anything. It is what --dry-run prints: an operator can read what their
+// config turns into before a guest exists, and for a filtered guest the rules are most of
+// what they came to read.
+func (svc Service) Plan(cfg schema.AppConfig) (argv []string, ruleset string, err error) {
 	if err := svc.check(cfg); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	layout, err := svc.machineLayout(cfg, false, false)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return qemu.Args(cfg, layout), nil
+	return netns.Command(cfg, qemu.Args(cfg, layout))
 }
 
 // Run boots an app's guest.
@@ -115,6 +116,9 @@ func (svc Service) machineLayout(cfg schema.AppConfig, installing, startServices
 	name := cfg.AppNameID
 	layout := svc.layout(cfg)
 	layout.Installing = installing
+	// The wrapper is decided here rather than after the argv is built, because it changes the
+	// argv: a forward has to be bound where pasta actually delivers it.
+	layout.Namespaced = netns.Applies(cfg)
 
 	prepared, err := firmware.Prepare(cfg.VirtualizationMeta, svc.Paths.UEFIVars(name), cfg.ImageMeta.Image)
 	if err != nil {

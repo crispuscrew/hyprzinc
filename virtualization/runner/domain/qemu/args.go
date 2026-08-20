@@ -42,6 +42,10 @@ type Layout struct {
 	// and runs under a fixed placeholder, so deriving from that name would give every install on every
 	// host the same identity - at the one moment it matters most, since OOBE runs here.
 	Identity string
+
+	// Namespaced means this guest runs inside the filtered network namespace, which changes
+	// where a forwarded port has to be bound. See netArgs.
+	Namespaced bool
 }
 
 // Args returns the full argv for cfg. The caller has already validated cfg, so the sizing
@@ -88,7 +92,7 @@ func Args(cfg schema.AppConfig, layout Layout) []string {
 		// key to boot from CD" and starts over.
 		args = append(args, "-boot", "once=d,menu=on")
 	}
-	args = append(args, netArgs(identity, virt)...)
+	args = append(args, netArgs(identity, virt, layout.Namespaced)...)
 	args = append(args, displayArgs(virt)...)
 	args = append(args, audioArgs(cfg.AudioMeta)...)
 	return args
@@ -133,10 +137,19 @@ func diskArgs(layout Layout, devices schema.VMDevices) []string {
 // with no host interface to attach to and nothing inbound except the forwards asked for.
 // Each forward binds 127.0.0.1 rather than every interface, so a forwarded guest port
 // reaches the host that started it and not the LAN.
-func netArgs(appName string, virt schema.VirtualizationMeta) []string {
+//
+// A namespaced guest binds every address instead, and that is narrower than it reads:
+// the addresses are the namespace's, reachable only through a port pasta was told to
+// forward. Measured - pasta delivers a forward to the namespace's interface address, and
+// splices its loopback to the host's, so a loopback bind is an address nothing arrives on.
+func netArgs(appName string, virt schema.VirtualizationMeta, namespaced bool) []string {
+	bind := "127.0.0.1"
+	if namespaced {
+		bind = ""
+	}
 	netdev := "user,id=net0"
 	for _, forward := range virt.ForwardPorts {
-		netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-:%d", forward.HostPort, forward.GuestPort)
+		netdev += fmt.Sprintf(",hostfwd=tcp:%s:%d-:%d", bind, forward.HostPort, forward.GuestPort)
 	}
 	return []string{
 		"-netdev", netdev,
