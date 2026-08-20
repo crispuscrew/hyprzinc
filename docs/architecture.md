@@ -967,14 +967,30 @@ differ between the two runtimes. Only self-scoped egress reaches a guest; siblin
 through a gateway, forwarding and by-name allowances are refused rather than half-applied, since
 a guest has no siblings and no pod to link to.
 
-The ruleset accepts NO loopback traffic, which is deliberate and was measured: pasta splices a
-namespace's loopback to the host's, so a rule accepting loopback-addressed egress hands the guest
-every service the person running it has bound to `127.0.0.1`. Scoping by address does not help,
-because the address genuinely is `127.0.0.1` at both ends. A guest needs none of it - it reaches
-the world through its emulated NIC, and qemu's control sockets are unix sockets.
+pasta splices a namespace's loopback to the host's, so a guest that could reach `127.0.0.1` would
+reach every service the person running it has bound there. What closes that is the **input**
+chain's default drop, not the absence of a loopback accept on egress: the splice works by pasta
+accepting the connection inside the namespace. Measured three ways - a bare pasta namespace
+reaches a host loopback service, this ruleset does not, and adding one `tcp dport <p> accept` to
+the input chain reaches it again. Every accept in that chain is therefore loopback exposure on its
+port, which is why the only ones are the published ports, and pasta itself binds those on the host.
 
-`ForwardPorts` is published by pasta rather than by qemu's `hostfwd`, which now binds inside the
-namespace where the host cannot reach it.
+`ForwardPorts` is published by pasta rather than by qemu's `hostfwd`. A forward is delivered to the
+namespace's interface address, so the guest's `hostfwd` binds every address of the namespace rather
+than its loopback, where nothing arrives. That is narrower than it reads: the only way in is a port
+pasta was told to forward, verified by an undeclared port staying unreachable from the host.
+
+`DNSServers` is delivered as well as enforced. qemu's user-mode networking takes its upstream
+resolver from `/etc/resolv.conf`, so a guest whose lists are allowances would ask the host's
+resolver and have its own rules drop the query - it resolved nothing. The namespace gets a
+resolv.conf naming the declared servers, bind-mounted before qemu execs: no cooperation from the
+guest, so it works for one with no cloud-init, and pasta's mount namespace does not propagate.
+`zc` warns when a guest's lists are allowances and no resolver is named.
+
+`zvr net <app>` reads the counters back, as `zcr net` does for a container, and the parser is
+shared with it. Posture is observed from the namespace the guest is actually in rather than from
+its config, for the same reason `zcr net` reads pod membership: an edited YAML must not change what
+is reported about a guest already running.
 
 ### 6.6 Dependency startup ordering
 

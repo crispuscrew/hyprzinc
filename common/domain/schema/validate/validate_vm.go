@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/crispuscrew/zinc/common/domain/nftrules"
 	"github.com/crispuscrew/zinc/common/domain/schema"
 )
 
@@ -330,5 +331,26 @@ func checkMac(mac string, add addFunc) {
 	}
 	if strings.EqualFold(mac, "00:00:00:00:00:00") {
 		add("VirtualizationMeta.MacAddress %q: the all-zero address is not usable", mac)
+	}
+}
+
+// guestDNSWarnings surfaces the one way a correct-looking guest silently has no network at all.
+//
+// A list that is an allowance makes the egress chain default-drop. qemu's user-mode networking
+// takes its upstream resolver from the host's, so unless DNSServers names one, every query the
+// guest makes is refused by the guest's own ruleset and nothing resolves. Measured, on a guest
+// that booted, reached its allowed address by IP, and could not look up a name.
+func guestDNSWarnings(cfg schema.AppConfig) []string {
+	if cfg.Type != schema.ZincVirtualization || len(cfg.NetworkMeta.DNSServers) > 0 {
+		return nil
+	}
+	if !nftrules.DefaultDrop(cfg) {
+		return nil
+	}
+	return []string{
+		"NetworkMeta: this guest's lists are allowances, so its egress chain defaults to drop and " +
+			"its DNS is dropped with everything else - it will resolve no names at all. Name a resolver " +
+			"in DNSServers (it is allowed through, and the guest is pointed at it), or give the guest " +
+			"an address it can reach without one.",
 	}
 }

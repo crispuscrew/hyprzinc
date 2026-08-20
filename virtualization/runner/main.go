@@ -18,6 +18,7 @@
 //	zvr reset <app>          delete the guest's disk, returning it to the pinned base
 //	zvr pin <image>          print the sha256 pin for a base image
 //	zvr install --disk ...   run an OS installer to produce a base disk (Windows)
+//	zvr net <app>            what the guest's egress ruleset has seen
 //	zvr console <app>        where to attach for the guest's serial console
 package main
 
@@ -49,6 +50,7 @@ const usage = `usage:
   zvr pin <image.qcow2>         print the sha256 pin to put in a config
   zvr install --disk PATH --media ISO...
                                 run an OS installer to produce a base disk (Windows)
+  zvr net <app> [--json]        what the guest's egress ruleset has seen
   zvr console <app>             print how to attach to the guest's serial console
   zvr version`
 
@@ -96,6 +98,8 @@ func run(argv []string) error {
 		return cmdValidate(svc, rest)
 	case "reset":
 		return cmdReset(svc, rest)
+	case "net":
+		return cmdNet(svc, rest)
 	case "console":
 		return cmdConsole(svc, rest)
 	default:

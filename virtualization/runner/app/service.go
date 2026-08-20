@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/crispuscrew/zinc/common/domain/nftrules"
 	"github.com/crispuscrew/zinc/common/domain/schema"
 	"github.com/crispuscrew/zinc/common/domain/schema/validate"
 	"github.com/crispuscrew/zinc/virtualization/runner/adapters/disk"
@@ -171,6 +172,32 @@ func (svc Service) Stop(name string, force bool, timeout time.Duration) error {
 	// launch had just written.
 	_ = os.Remove(svc.Paths.Resolv(name))
 	return err
+}
+
+// NetCounters reads back what a running guest's ruleset has seen. The bool says whether it has a
+// ruleset at all, observed from the namespace the guest is in rather than from what its config
+// asks for.
+func (svc Service) NetCounters(name string) ([]nftrules.RuleCounter, bool, error) {
+	if err := guestName(name); err != nil {
+		return nil, false, err
+	}
+	state, err := svc.Runtime.State(name)
+	if err != nil {
+		return nil, false, err
+	}
+	if !state.Alive {
+		return nil, false, fmt.Errorf("%s is not running: a guest's counters live in its namespace, which exists only while it does", name)
+	}
+	namespaced, err := netns.Namespaced(state.PID)
+	if err != nil || !namespaced {
+		return nil, false, err
+	}
+	raw, err := netns.Counters(state.PID)
+	if err != nil {
+		return nil, true, err
+	}
+	counters, err := nftrules.ParseCounters(raw)
+	return counters, true, err
 }
 
 // State reports one app's guest.

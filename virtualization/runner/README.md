@@ -5,13 +5,14 @@ split by `Type`, with each runner taking the apps it owns and refusing the other
 
 ```sh
 zvr run <app>            boot a guest (detached; the window, if any, is qemu's)
-zvr run <app> --dry-run  print the exact qemu command line, change nothing
+zvr run <app> --dry-run  print the exact command line and ruleset, change nothing
 zvr stop <app> [--force] shut it down (ACPI power button, or signal the process)
 zvr ps                   running guests
 zvr status <app>         one guest's state
 zvr validate <app>       check a config, run nothing
 zvr reset <app>          delete the guest's disk, back to the pinned base
 zvr pin <image.qcow2>    print the sha256 pin to put in a config
+zvr net <app> [--json]   what the guest's egress ruleset has seen
 zvr console <app>        where to attach for the serial console
 ```
 

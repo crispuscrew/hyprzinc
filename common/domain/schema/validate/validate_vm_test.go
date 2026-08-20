@@ -489,3 +489,52 @@ func TestVM_EgressListsAreAcceptedAndTheRestRefused(t *testing.T) {
 		})
 	}
 }
+
+// A guest whose lists are allowances has no DNS unless it names a resolver: its queries go to the
+// host's, which its own default-drop chain refuses. Measured on a booted guest, and invisible
+// until then, so the author is told at authoring time.
+func TestWarnings_WhitelistGuestWithNoResolver(t *testing.T) {
+	cfg := schema.AppConfig{
+		AppNameID: "guest", Type: schema.ZincVirtualization,
+		NetworkMeta: schema.NetworkMeta{NetworkLists: []schema.NetworkList{
+			{IPv4CIDR: []string{"1.1.1.1/32"}, Ports: []int{443}},
+		}},
+	}
+	if !mentionsDNS(Warnings(cfg)) {
+		t.Errorf("a default-drop guest with no DNSServers should be warned, got %v", Warnings(cfg))
+	}
+
+	// Named a resolver: the rules let it through and the guest is pointed at it.
+	withResolver := cfg
+	withResolver.NetworkMeta.DNSServers = []string{"1.1.1.1"}
+	if mentionsDNS(Warnings(withResolver)) {
+		t.Errorf("a guest that named a resolver should not be warned: %v", Warnings(withResolver))
+	}
+
+	// An all-blacklist guest is allow-all-except, so its DNS is not dropped and nothing is wrong.
+	blacklist := schema.AppConfig{
+		AppNameID: "guest", Type: schema.ZincVirtualization,
+		NetworkMeta: schema.NetworkMeta{NetworkLists: []schema.NetworkList{
+			{Blacklist: true, IPv4CIDR: []string{"192.0.2.0/24"}},
+		}},
+	}
+	if mentionsDNS(Warnings(blacklist)) {
+		t.Errorf("an allow-all-except guest resolves fine, so should not be warned: %v", Warnings(blacklist))
+	}
+
+	// A container is not this warning's business: it gets its resolver from the pod, not from qemu.
+	container := cfg
+	container.Type = schema.ZincContainer
+	if mentionsDNS(Warnings(container)) {
+		t.Errorf("this is a guest-only warning: %v", Warnings(container))
+	}
+}
+
+func mentionsDNS(warns []string) bool {
+	for _, warn := range warns {
+		if strings.Contains(warn, "DNSServers") {
+			return true
+		}
+	}
+	return false
+}

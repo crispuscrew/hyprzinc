@@ -102,6 +102,14 @@ were silently ignored, and the audio directions were a claim rather than a contr
   untrusted GUI app. Declaring `NetworkLists` on a VM app now runs qemu inside a namespace with
   an nftables ruleset loaded before it starts, so a guest never exists on an unfiltered network.
 
+  `zvr net <app>` reads the guest's counters back, `--json` included, the way `zcr net` does for a
+  container; the parser moved to `common` beside the renderer. Posture is observed from the
+  namespace the guest is in rather than from its config, because an edited YAML must not change
+  what is reported about a guest already running.
+
+  `zc` warns when a guest's lists are allowances and no resolver is named, which is the one way a
+  correct-looking guest silently resolves nothing.
+
   `DNSServers` is delivered as well as enforced: qemu's user networking takes its upstream
   resolver from `/etc/resolv.conf`, so the namespace gets one naming the declared servers. Without
   it a whitelist guest resolved nothing, since the rules dropped the query the host's resolver
@@ -260,9 +268,6 @@ a pin covers the bytes of a file, and a file can point somewhere else.
   by-name allowances are refused for a VM app rather than half-applied; the container renderer
   still holds that vocabulary, and `common/domain/nftrules` is the shape it can collapse into
   when it reaches guests too.
-- A guest's counters cannot be read back. The rules carry the same labels a container's do, and
-  the namespace is reachable from the host, but there is no `zvr net counters` and the parser
-  that would serve it lives in the container runner rather than in `common`.
 
 ## [0.9.1] - 2026-07-31
 

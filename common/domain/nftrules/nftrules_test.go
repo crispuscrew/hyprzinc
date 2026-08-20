@@ -31,7 +31,7 @@ func TestRender_WhitelistIsDefaultDrop(t *testing.T) {
 	if !strings.Contains(got, "hook output priority 0; policy drop;") {
 		t.Errorf("a whitelist must make the chain default-drop:\n%s", got)
 	}
-	if !strings.Contains(got, `ip daddr { 10.0.0.0/8 } tcp dport { 443 } counter accept comment "list[0]"`) {
+	if !strings.Contains(got, `ip daddr { 10.0.0.0/8 } tcp dport { 443 } counter accept comment "list[0] ip tcp"`) {
 		t.Errorf("the allowed destination is missing:\n%s", got)
 	}
 	// The backstop is what makes "what is my sandbox refusing" a number rather than a
@@ -107,10 +107,10 @@ func TestRender_DNSIsARestriction(t *testing.T) {
 	cfg := withLists(schema.NetworkList{IPv4CIDR: []string{"1.1.1.1/32"}})
 	cfg.NetworkMeta.DNSServers = []string{"9.9.9.9"}
 	got := Render(cfg)
-	if !strings.Contains(got, "ip daddr { 9.9.9.9 } udp dport { 53, 853 } accept") {
+	if !strings.Contains(got, `ip daddr { 9.9.9.9 } udp dport { 53, 853 } counter accept comment "declared dns udp"`) {
 		t.Errorf("the declared resolver must be reachable:\n%s", got)
 	}
-	if !strings.Contains(got, `udp dport { 53, 853 } counter drop comment "dns"`) {
+	if !strings.Contains(got, `udp dport { 53, 853 } counter drop comment "undeclared dns udp"`) {
 		t.Errorf("DNS to anything else must be dropped:\n%s", got)
 	}
 }
@@ -136,7 +136,7 @@ func TestRender_LabelsCarryTheConfigIndex(t *testing.T) {
 		schema.NetworkList{Host: true, IPv4CIDR: []string{"0.0.0.0/0"}}, // index 0, ignored
 		schema.NetworkList{IPv4CIDR: []string{"1.1.1.1/32"}},            // index 1, rendered
 	))
-	if !strings.Contains(got, `comment "list[1]"`) {
+	if !strings.Contains(got, `comment "list[1] ip"`) {
 		t.Errorf("the counter should name the config index it came from:\n%s", got)
 	}
 }
@@ -148,7 +148,7 @@ func TestRender_PublishedPortsAreAcceptedInbound(t *testing.T) {
 	cfg := withLists(schema.NetworkList{IPv4CIDR: []string{"1.1.1.1/32"}})
 	cfg.VirtualizationMeta.ForwardPorts = []schema.PortForward{{HostPort: 2222, GuestPort: 22}}
 	got := Render(cfg)
-	if !strings.Contains(got, `tcp dport { 2222 } counter accept comment "published"`) {
+	if !strings.Contains(got, `tcp dport { 2222 } counter accept comment "published 2222 tcp"`) {
 		t.Errorf("the published port must be let in:\n%s", got)
 	}
 	// And nothing else is.
@@ -175,7 +175,7 @@ func TestRender_InputChainAcceptsNothingBeyondThePublishedPorts(t *testing.T) {
 		line = strings.TrimSpace(line)
 		if !strings.Contains(line, "accept") ||
 			strings.HasPrefix(line, "ct state established,related") ||
-			strings.Contains(line, `comment "published"`) {
+			strings.Contains(line, `comment "published `) {
 			continue
 		}
 		t.Errorf("this accept reopens the host's loopback on its port: %q", line)

@@ -81,7 +81,8 @@ func Render(cfg schema.AppConfig) string {
 	bld.WriteString("\t\tct state established,related accept\n")
 	for _, port := range publishedPorts(cfg) {
 		for _, proto := range []string{"tcp", "udp"} {
-			fmt.Fprintf(&bld, "\t\t%s dport { %d } %s\n", proto, port, counted("accept", "published"))
+			fmt.Fprintf(&bld, "\t\t%s dport { %d } %s\n", proto, port,
+				counted("accept", fmt.Sprintf("published %d %s", port, proto)))
 		}
 	}
 	bld.WriteString("\t}\n")
@@ -123,6 +124,14 @@ func egressLists(cfg schema.AppConfig) []listRule {
 	return out
 }
 
+// DefaultDrop reports whether an app's egress chain defaults to drop, which any list that is not
+// a blacklist makes it. Exported because what such a guest cannot reach is worth warning about at
+// authoring time, and that warning must not drift from the rule it describes.
+func DefaultDrop(cfg schema.AppConfig) bool {
+	lists := egressLists(cfg)
+	return len(lists) > 0 && chainPolicy(lists) == "drop"
+}
+
 // chainPolicy is drop unless every list is a blacklist, which is the only shape that means
 // "everything except". One whitelist among them makes the chain default-drop.
 func chainPolicy(rules []listRule) string {
@@ -148,12 +157,12 @@ func writeRules(bld *strings.Builder, family string, cidrs []string, ports []int
 	}
 	set := strings.Join(cidrs, ", ")
 	if len(ports) == 0 {
-		fmt.Fprintf(bld, "\t\t%s daddr { %s } %s\n", family, set, counted(verdict, label))
+		fmt.Fprintf(bld, "\t\t%s daddr { %s } %s\n", family, set, counted(verdict, label+" "+family))
 		return
 	}
 	for _, proto := range []string{"tcp", "udp"} {
 		fmt.Fprintf(bld, "\t\t%s daddr { %s } %s dport { %s } %s\n",
-			family, set, proto, portList(ports), counted(verdict, label))
+			family, set, proto, portList(ports), counted(verdict, label+" "+family+" "+proto))
 	}
 }
 
@@ -164,11 +173,14 @@ func writeDNS(bld *strings.Builder, servers []string) {
 		return
 	}
 	set := strings.Join(servers, ", ")
+	// The accepts are counted too, so "is this guest resolving at all" is a number rather than an
+	// inference from the drops being zero.
 	for _, proto := range []string{"udp", "tcp"} {
-		fmt.Fprintf(bld, "\t\tip daddr { %s } %s dport { 53, 853 } accept\n", set, proto)
+		fmt.Fprintf(bld, "\t\tip daddr { %s } %s dport { 53, 853 } %s\n",
+			set, proto, counted("accept", "declared dns "+proto))
 	}
 	for _, proto := range []string{"udp", "tcp"} {
-		fmt.Fprintf(bld, "\t\t%s dport { 53, 853 } %s\n", proto, counted("drop", "dns"))
+		fmt.Fprintf(bld, "\t\t%s dport { 53, 853 } %s\n", proto, counted("drop", "undeclared dns "+proto))
 	}
 }
 

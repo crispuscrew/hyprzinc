@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/crispuscrew/zinc/common/domain/nftrules"
 	"github.com/crispuscrew/zinc/container/runner/adapters/netenforce"
 	"github.com/crispuscrew/zinc/container/runner/app"
 	"github.com/crispuscrew/zinc/container/runner/domain/options"
@@ -39,8 +40,8 @@ type netEntry struct {
 // has seen.
 type netReport struct {
 	netEntry
-	Note     string                   `json:"note,omitempty"`
-	Counters []netenforce.RuleCounter `json:"counters"`
+	Note     string                 `json:"note,omitempty"`
+	Counters []nftrules.RuleCounter `json:"counters"`
 }
 
 // cmdNet answers both questions a desktop shell asks about an app's network: which running apps have
@@ -129,7 +130,7 @@ func netCounters(svc app.Service, opt options.HostOptions, name string, asJSON b
 	// should find none, not have to handle the absence of the field as a third case.
 	report := netReport{
 		netEntry: entryFor(addr, cfg.AppNameID, len(cfg.NetworkMeta.NetworkLists) > 0),
-		Counters: []netenforce.RuleCounter{},
+		Counters: []nftrules.RuleCounter{},
 	}
 	raw, filtered, err := svc.NetCounters(cfg, opt)
 	if err != nil {
@@ -137,7 +138,7 @@ func netCounters(svc app.Service, opt options.HostOptions, name string, asJSON b
 	}
 	if filtered {
 		report.Note = countersNote // said only where there are numbers to misread
-		if report.Counters, err = netenforce.ParseCounters([]byte(raw)); err != nil {
+		if report.Counters, err = nftrules.ParseCounters([]byte(raw)); err != nil {
 			return fmt.Errorf("%s: %w", cfg.AppNameID, err)
 		}
 	}

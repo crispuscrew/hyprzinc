@@ -307,6 +307,7 @@ func Warnings(cfg schema.AppConfig) []string {
 				"(viogpudo, from the virtio-win disc), the screen goes black as soon as the OS starts. "+
 				"Display: Compatible is the driverless choice.")
 	}
+	warns = append(warns, guestDNSWarnings(cfg)...)
 	warns = append(warns, dbusWarnings(cfg.DBusMeta)...)
 	warns = append(warns, audioWarnings(cfg)...)
 	for index, netList := range cfg.NetworkMeta.NetworkLists {
