@@ -7,6 +7,8 @@ tracked in [RELEASES.md](RELEASES.md).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-21
+
 Schema v3, and the release where every field in the schema is enforced by something. Three
 blocks were declared and did nothing: `NotificationMeta` was refused outright, anonymous volumes
 were silently ignored, and the audio directions were a claim rather than a control.
