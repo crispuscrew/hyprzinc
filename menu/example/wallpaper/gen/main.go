@@ -70,7 +70,6 @@ func run(dir string) error {
 	return nil
 }
 
-// write renders one gradient and encodes it to path.
 func write(path string, spec sample) error {
 	file, err := os.Create(path)
 	if err != nil {

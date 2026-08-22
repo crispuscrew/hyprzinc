@@ -1,8 +1,7 @@
-// Package machine supervises guest processes. Choosing qemu directly over libvirt means
-// this is ours to own: starting a guest detached from the launching shell, finding it
-// again later, and stopping it the way its own OS expects. That cost buys the thing the
-// design is for - qemu runs inside the user's session, so it can open an accelerated
-// window on their compositor, which a daemon-spawned process cannot.
+// Package machine supervises guest processes: starting a guest detached from the launching shell,
+// finding it again, and stopping it the way its own OS expects. Choosing qemu directly over libvirt
+// makes that ours to own, and buys the thing the design is for - qemu runs inside the user's session,
+// so it can open an accelerated window on their compositor.
 package machine
 
 import (
@@ -20,11 +19,10 @@ import (
 )
 
 const (
-	// startGrace is how long to watch a freshly started guest before declaring it up. A
-	// bad command line kills qemu in milliseconds, so this is long enough to catch that
-	// without making a good launch feel slow.
-	startGrace = 2 * time.Second
-	// pollInterval paces the waits below.
+	// startGrace is how long to watch a freshly started guest before declaring it up.
+	// Generous costs nothing - a rejected command line kills qemu outright and is noticed at
+	// once - and a filtered guest has pasta's setup and an nft load to get through first.
+	startGrace   = 15 * time.Second
 	pollInterval = 50 * time.Millisecond
 	// termGrace is how long a guest gets after SIGTERM before SIGKILL. qemu closes its
 	// disks on SIGTERM, so this is about letting it finish that, not about the guest.
@@ -48,7 +46,7 @@ type State struct {
 // Start launches a guest detached from the calling shell and confirms it survived. The
 // process is put in its own session so it outlives zvr - a launcher fires and forgets,
 // and the guest must not die with the hotkey that started it.
-func (runtime Runtime) Start(app string, args []string, extraEnv []string) error {
+func (runtime Runtime) Start(app string, args []string, extraEnv []string, stdin string) error {
 	if state, _ := runtime.State(app); state.Alive {
 		return fmt.Errorf("%s is already running (pid %d)", app, state.PID)
 	}
@@ -71,6 +69,12 @@ func (runtime Runtime) Start(app string, args []string, extraEnv []string) error
 	}
 	command.Stdout = logFile
 	command.Stderr = logFile
+	if stdin != "" {
+		// The nftables ruleset, when the guest runs inside a filtered namespace. On stdin
+		// rather than in a file: it is generated per launch, and a file would be one more
+		// thing that could change between being written and being read.
+		command.Stdin = strings.NewReader(stdin)
+	}
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", args[0], err)
@@ -80,11 +84,70 @@ func (runtime Runtime) Start(app string, args []string, extraEnv []string) error
 	// per launch.
 	go func() { _ = command.Wait() }()
 
-	if err := runtime.confirmStarted(app, command.Process.Pid); err != nil {
+	// Every failure from here on has to take the started process with it, or the launch is
+	// abandoned while the guest keeps running with nothing tracking it.
+	abandon := func(err error) error {
+		terminate(command.Process.Pid)
 		runtime.clean(app)
 		return err
 	}
+	if err := runtime.confirmStarted(app, command.Process.Pid); err != nil {
+		return abandon(err)
+	}
+	// Replace what qemu wrote with a pid this host can actually signal: a guest that cannot
+	// be signalled cannot be stopped.
+	pid := guestPID(command.Process.Pid, app)
+	if pid == 0 {
+		return abandon(fmt.Errorf("started %s but could not find its guest process; see %s", app, runtime.Paths.Log(app)))
+	}
+	if err := os.WriteFile(runtime.Paths.PIDFile(app), []byte(strconv.Itoa(pid)+"\n"), 0o600); err != nil {
+		return abandon(fmt.Errorf("record the guest pid: %w", err))
+	}
 	return nil
+}
+
+// guestPID is the host-visible pid of the qemu process zvr started.
+//
+// A filtered guest is pid 1 inside pasta's PID namespace, so 1 is what it writes to its own
+// -pidfile: init, as read on the host. The usable pid is found from this side instead, and
+// isGuestProcess is what tells the wrapper from the guest it wraps.
+func guestPID(started int, app string) int {
+	if isGuestProcess(started, app) {
+		return started // not wrapped: zvr started qemu itself
+	}
+	for _, child := range childrenOf(started) {
+		if isGuestProcess(child, app) {
+			return child
+		}
+	}
+	return 0
+}
+
+// childrenOf lists a process's children as the host numbers them.
+func childrenOf(pid int) []int {
+	name := strconv.Itoa(pid)
+	data, err := os.ReadFile(filepath.Join("/proc", name, "task", name, "children"))
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, field := range strings.Fields(string(data)) {
+		if child, err := strconv.Atoi(field); err == nil {
+			pids = append(pids, child)
+		}
+	}
+	return pids
+}
+
+// terminate tears down a launch that did not come up, innermost first.
+//
+// Order matters: killing the wrapper first orphans what is inside its namespace, because the
+// namespace outlives its creator. SIGKILL, since a guest that never started has nothing to flush.
+func terminate(started int) {
+	for _, child := range childrenOf(started) {
+		_ = syscall.Kill(child, syscall.SIGKILL)
+	}
+	_ = syscall.Kill(started, syscall.SIGKILL)
 }
 
 // confirmStarted watches a new guest long enough to tell a successful boot from a command
@@ -150,12 +213,9 @@ func (runtime Runtime) Stop(app string, force bool, timeout time.Duration) error
 	if err != nil {
 		return fmt.Errorf("%s is not running", app)
 	}
-	// A live pid is not enough: it must still be THIS app's guest. qemu can die without
-	// clearing its pidfile (SIGKILL, the OOM killer, a crash), and the kernel eventually
-	// reissues that number to something unrelated - at which point signalling on the pidfile
-	// alone is "terminate an arbitrary process of this user". State already applies this
-	// check, and firmware.isSwtpm cites the supervisor as the precedent for it; the
-	// supervisor was the one place not doing it.
+	// A live pid is not enough: it must still be THIS app's guest. qemu can die without clearing its
+	// pidfile, and the kernel eventually reissues the number - at which point signalling on the pidfile
+	// alone is "terminate an arbitrary process of this user".
 	if !alive(pid) || !isGuestProcess(pid, app) {
 		runtime.clean(app)
 		return fmt.Errorf("%s is not running (cleaned up a stale pidfile)", app)
@@ -267,11 +327,9 @@ func isGuestProcess(pid int, app string) bool {
 	if err != nil {
 		return false
 	}
-	// /proc cmdline is NUL-separated, so compare argv ELEMENTS rather than searching the
-	// whole blob. A substring check over the joined line matches any command line that
-	// merely mentions the name, and every guest's own cmdline contains its overlay path -
-	// so one app's pid could be read as another's, which for Stop means signalling the
-	// wrong guest. `-name <app>` is what the launcher writes, so require exactly that.
+	// /proc cmdline is NUL-separated, so compare argv ELEMENTS. A substring check matches any command line
+	// merely mentioning the name, and every guest's cmdline contains its overlay path, so one app's pid
+	// could be read as another's. `-name <app>` is what the launcher writes.
 	argv := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
 	named := false
 	for index, arg := range argv {

@@ -1,5 +1,5 @@
-# Zinc demo app (schema v2). See launcher/demo/README.md.
-SchemaVersion: 2
+# Zinc demo app (schema v3). See launcher/demo/README.md.
+SchemaVersion: 3
 Type: ZincContainer
 AppNameID: cmatrix
 Icon: utilities-terminal

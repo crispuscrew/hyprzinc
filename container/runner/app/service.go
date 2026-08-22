@@ -1,17 +1,13 @@
-// Package app is the runner's application layer - the hexagon's "inside". A Service
-// orchestrates a launch by composing the ports (Store, Runtime, ImageBuilder,
-// ImageResolver, NetEnforcer) and depends on none of their concrete adapters. The
-// front-ends build the adapters, hand them to New, and drive everything through this
-// one facade.
-//
-// This is where the launch sequence lives - validate, build the derived image if
-// needed, run the egress lock-down through the NetEnforcer, then start the app - so
-// there is exactly one launch path to get right (docs/architecture.md section 9.1, section 13).
+// Package app is the runner's application layer - the hexagon's "inside". A Service orchestrates a
+// launch by composing the ports and depends on none of their adapters. The launch sequence lives
+// here, so there is exactly one path to get right (section 9.1, section 13).
 package app
 
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/crispuscrew/zinc/common/domain/schema"
@@ -31,22 +27,18 @@ type Service struct {
 	net      ports.NetEnforcer
 	bus      ports.DBusBroker
 	display  ports.DisplayBroker
+	audio    ports.AudioBroker
+	notify   ports.NotifyBroker
 }
 
 // New wires the ports into a Service.
-func New(store ports.Store, runtime ports.Runtime, builder ports.ImageBuilder, resolver ports.ImageResolver, net ports.NetEnforcer, bus ports.DBusBroker, display ports.DisplayBroker) Service {
-	return Service{store: store, runtime: runtime, builder: builder, resolver: resolver, net: net, bus: bus, display: display}
+func New(store ports.Store, runtime ports.Runtime, builder ports.ImageBuilder, resolver ports.ImageResolver, net ports.NetEnforcer, bus ports.DBusBroker, display ports.DisplayBroker, audio ports.AudioBroker, notify ports.NotifyBroker) Service {
+	return Service{store: store, runtime: runtime, builder: builder, resolver: resolver, net: net, bus: bus, display: display, audio: audio, notify: notify}
 }
 
-// address recovers the app and instance halves of a runtime name. The instance rides on
-// AppNameID from the moment a command resolves an address, which is what makes every runtime
-// object per-instance without threading a second identifier through every adapter; the
-// Wayland security context is the one consumer that needs the halves back, because app_id
-// must be the same for every instance and instance_id must not be (section 5.2).
-//
-// The store is the authority on which readings of a dotted name are real apps. A Service
-// built without one (the plan-only test wiring) gets the whole name as the app, which is the
-// same answer a config run from a file path gets and is correct for both.
+// address recovers the app and instance halves of a runtime name. The Wayland security context is
+// the one consumer that needs them apart (section 5.2). The store is the authority on which
+// readings of a dotted name are real apps; without one, the whole name is the app.
 func (svc Service) address(name string) paths.Address {
 	defined := func(string) bool { return false }
 	if svc.store != nil {
@@ -55,14 +47,18 @@ func (svc Service) address(name string) paths.Address {
 	return paths.ParseRuntime(name, defined)
 }
 
-// withDisplay establishes the app's Wayland security context and returns the options its
-// container should be built from. It runs immediately before the container is created: the
-// socket it produces is a bind-mount source, so it must exist first, and nothing later in the
-// launch can invalidate it.
+// withDisplay establishes the security context and returns the options the container is built from.
+// It runs immediately before the container, whose bind mount needs the socket to exist.
 //
-// opt is taken and returned by value, so a dependency launched from the same launch never
-// inherits the socket of the app that depends on it - a per-app result must not travel down a
-// recursion as though it were a host fact.
+// withBundle resolves the app's bundle directory, where its authored Configs live. Here rather than
+// in the argv builder, because by then AppNameID carries the instance and a bundle is per APP.
+//
+// Both take and return opt by value, so a dependency never inherits its dependent's socket.
+func (svc Service) withBundle(cfg schema.AppConfig, opt options.HostOptions) options.HostOptions {
+	opt.BundleDir = paths.BundleDir(opt.ConfigHome, svc.address(cfg.AppNameID).App)
+	return opt
+}
+
 func (svc Service) withDisplay(cfg schema.AppConfig, opt options.HostOptions) (options.HostOptions, error) {
 	if svc.display == nil {
 		return opt, nil
@@ -75,12 +71,49 @@ func (svc Service) withDisplay(cfg schema.AppConfig, opt options.HostOptions) (o
 	return opt, nil
 }
 
+// withAudio establishes the app's PipeWire security context and returns the options its
+// container should be built from. Like withDisplay it runs immediately before the container,
+// whose bind mount needs the socket to exist, and takes opt by value so a dependency never
+// inherits its dependent's socket.
+func (svc Service) withAudio(cfg schema.AppConfig, opt options.HostOptions) (options.HostOptions, error) {
+	if svc.audio == nil {
+		return opt, nil
+	}
+	socket, err := svc.audio.Establish(svc.address(cfg.AppNameID), cfg, opt)
+	if err != nil {
+		return opt, err
+	}
+	opt.PipeWireSocket = socket
+	return opt, nil
+}
+
 // attachFlags are the app-container flags that attach it to everything Zinc prepared on its
 // behalf: the network attachment from the enforcer, and the filtered bus socket from the
 // broker. Composed in one place so Plan, launch and OpenTerminal cannot drift apart on what
 // the app is actually attached to.
-func (svc Service) attachFlags(cfg schema.AppConfig) []string {
-	return append(svc.net.RunFlags(cfg), svc.bus.RunFlags(cfg)...)
+// The bus flags are the proxy's own unless a notification filter was established, in which case
+// the app is attached to the filter instead and the proxy becomes the filter's upstream. Only
+// one of the two may name the app's bus socket, or the app would carry two mounts for one path.
+func (svc Service) attachFlags(cfg schema.AppConfig, opt options.HostOptions) []string {
+	flags := svc.net.RunFlags(cfg)
+	if opt.NotifySocket != "" {
+		return flags
+	}
+	return append(flags, svc.bus.RunFlags(cfg)...)
+}
+
+// withNotify starts the app's notification filter, if its config asks for one, and returns the
+// options its container should be built from. Taken and returned by value like its siblings.
+func (svc Service) withNotify(cfg schema.AppConfig, opt options.HostOptions) (options.HostOptions, error) {
+	if svc.notify == nil {
+		return opt, nil
+	}
+	socket, err := svc.notify.Establish(svc.address(cfg.AppNameID), cfg, opt)
+	if err != nil {
+		return opt, err
+	}
+	opt.NotifySocket = socket
+	return opt, nil
 }
 
 // prepareSteps are the ordered pre-app steps: the enforcer's (establish and lock the netns)
@@ -105,22 +138,18 @@ func (svc Service) teardownSteps(cfg schema.AppConfig) []ports.Command {
 	return append(svc.bus.Teardown(cfg), svc.net.Teardown(cfg)...)
 }
 
-// Plan returns the ordered runtime commands a launch would run, without running them
-// - the NetEnforcer's pre-steps (establish + lock the netns) followed by the app
-// container. Used for dry-run so what will happen is fully visible.
-//
-// It shows the compositor's own Wayland socket even for an app that will get a security
-// context, because creating one is a side effect a dry run must not have and the derived
-// socket would not exist for anyone who pasted the printed command. The dry run says so in
-// as many words instead (see cmdRun); what is printed stays something that can be run.
+// Plan returns the commands a launch would run, without running them. It shows the compositor's own
+// Wayland socket even for an app that would get a context: creating one is a side effect a dry run
+// must not have, and the derived socket would not exist for anyone who pasted the command.
 func (svc Service) Plan(cfg schema.AppConfig, opt options.HostOptions) ([]ports.Command, error) {
 	if err := validate.Validate(cfg); err != nil { // never compose commands from unvalidated config (section 3)
 		return nil, fmt.Errorf("%s: %w", cfg.AppNameID, err)
 	}
+	opt = svc.withBundle(cfg, opt) // the dry run must show the same source the launch mounts
 	if err := checkNetwork(cfg); err != nil {
 		return nil, err
 	}
-	appArgs, err := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg))
+	appArgs, err := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg, opt))
 	if err != nil {
 		return nil, err
 	}
@@ -135,22 +164,16 @@ func (svc Service) Plan(cfg schema.AppConfig, opt options.HostOptions) ([]ports.
 	return append(steps, ports.Command{Args: appArgs, Desc: desc}), nil
 }
 
-// Launch validates cfg, auto-starts its depends_on apps (section 6.6), ensures its derived
-// image (if ImageMeta.Install is set), runs the egress lock-down through the
-// NetEnforcer (fail-closed: a half-built netns is torn down on any error), then
-// starts the app container detached. A multiterminal app launches by opening its
-// first terminal instead (the holder + a `podman exec`).
+// Launch validates cfg, auto-starts its depends_on apps (section 6.6), ensures its derived image,
+// runs the egress lock-down fail-closed, then starts the container detached. A multiterminal app
+// opens its first terminal instead.
 func (svc Service) Launch(cfg schema.AppConfig, opt options.HostOptions) error {
 	return svc.launch(cfg, opt, nil, map[string]bool{})
 }
 
-// launch is Launch's recursive core. chain is the stack of apps already mid-launch
-// (root → cfg's parent); it lets depends_on auto-start detect cycles. started is the
-// set of apps already brought up in THIS launch, shared across the whole recursion:
-// StartApp is detached, so a just-started app is not yet visible to runtime.Running(),
-// and without this shared set a dependency reached by two branches (a diamond) would
-// have its pod created twice - the second create failing and tearing the first down.
-// The public Launch starts the recursion with a nil chain and an empty started set.
+// launch is Launch's recursive core. chain is the stack of apps mid-launch, for cycle detection.
+// started is shared across the recursion because StartApp is detached and a just-started app is not
+// yet visible to Running(), so a diamond dependency would otherwise be created twice.
 func (svc Service) launch(cfg schema.AppConfig, opt options.HostOptions, chain []string, started map[string]bool) error {
 	if started[cfg.AppNameID] {
 		return nil // already brought up earlier in this launch
@@ -158,19 +181,22 @@ func (svc Service) launch(cfg schema.AppConfig, opt options.HostOptions, chain [
 	if err := validate.Validate(cfg); err != nil { // launch-time check catches drift (section 3)
 		return fmt.Errorf("%s: %w", cfg.AppNameID, err)
 	}
+	opt = svc.withBundle(cfg, opt)
+	if err := checkLaunchSources(cfg, opt); err != nil {
+		return err
+	}
 	if err := checkNetwork(cfg); err != nil { // fail closed on not-yet-supported network shapes
 		return err
 	}
-	// Refuse before preparing anything, because the fail-closed teardown below cannot tell
-	// "the object I just tried to create already exists" from "the object I created is
-	// broken". Without this, a second launch of a running app failed on its first prepare
-	// step and then tore down the pod, the D-Bus proxy and the socket directory belonging to
-	// the FIRST, healthy launch - so a double Enter in a launcher killed the app the person
-	// was working in. Two concurrent launches were worse: each removed the other's objects
-	// and nothing survived.
-	//
-	// Checked here rather than inside the loop so it also covers the un-instanced app whose
-	// container merely exists in an Exited state; that is a name collision either way.
+	// Serialise this app's launch before asking whether it is already running. The answer is read
+	// from the runtime, which does not show the app until the launch that is creating it finishes,
+	// so without the lock two launches a second apart both pass this check. See launchlock.go.
+	lock := lockLaunch(cfg.AppNameID)
+	defer lock.close()
+
+	// Refuse before preparing anything: the fail-closed teardown cannot tell "already exists" from "I
+	// built this and it is broken", so a second launch of a running app used to tear down the first
+	// one's pod, proxy and sockets. Here rather than in the loop, so it also covers an Exited container.
 	if running, err := svc.runtime.Running(); err == nil && running[cfg.AppNameID] {
 		return fmt.Errorf("%s is already running; stop it first, or run another instance with %s@<instance>",
 			cfg.AppNameID, cfg.AppNameID)
@@ -198,7 +224,15 @@ func (svc Service) launch(cfg schema.AppConfig, opt options.HostOptions, chain [
 	if err != nil {
 		return errors.Join(fmt.Errorf("launch %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
 	}
-	appArgs, err := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg))
+	opt, err = svc.withAudio(cfg, opt)
+	if err != nil {
+		return errors.Join(fmt.Errorf("launch %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
+	}
+	opt, err = svc.withNotify(cfg, opt)
+	if err != nil {
+		return errors.Join(fmt.Errorf("launch %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
+	}
+	appArgs, err := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg, opt))
 	if err != nil {
 		return errors.Join(err, svc.teardown(cfg, len(steps) > 0))
 	}
@@ -207,6 +241,12 @@ func (svc Service) launch(cfg schema.AppConfig, opt options.HostOptions, chain [
 	onFail := func() { _ = svc.teardown(cfg, len(steps) > 0) }
 	if err := svc.runtime.StartApp(cfg, opt, appArgs, onFail); err != nil {
 		return errors.Join(err, svc.teardown(cfg, len(steps) > 0))
+	}
+	// Hand what the launch built to something that outlives this process, or none of it is
+	// removed when the app exits on its own - and the pod left behind fails the next launch,
+	// `podman pod create` having no --replace. Only when there is something to remove.
+	if len(steps) > 0 {
+		svc.superviseAfter(cfg)
 	}
 	return nil
 }
@@ -242,14 +282,12 @@ func (svc Service) runAll(steps []ports.Command) error {
 	return errors.Join(errs...)
 }
 
-// NetCounters reads back what an app's enforced ruleset has actually seen, returning the
-// enforcer's own output and whether the app has a ruleset at all. An app with no
-// NetworkLists is the second case: it has no netns of its own, so there is nothing to count,
-// and saying so is an answer rather than an error.
-//
-// The output is deliberately unparsed. What it means belongs to the enforcement mechanism -
-// today nft's JSON - and the app layer teaching itself to read one adapter's format on a
-// caller's behalf is exactly the coupling the NetEnforcer port exists to avoid (section 13).
+// PodOf reports the pod a running app has joined, which is what its network posture is read
+// from: a filtered app is in one, an isolated app is in none.
+func (svc Service) PodOf(name string) (string, error) { return svc.runtime.PodOf(name) }
+
+// NetCounters returns the enforcer's own output and whether the app has a ruleset at all. Left
+// unparsed: what it means belongs to the enforcement mechanism, not the app layer (section 13).
 func (svc Service) NetCounters(cfg schema.AppConfig, opt options.HostOptions) (string, bool, error) {
 	cmd, filtered := svc.net.Counters(cfg, opt)
 	if !filtered {
@@ -262,14 +300,8 @@ func (svc Service) NetCounters(cfg schema.AppConfig, opt options.HostOptions) (s
 	return out, true, nil
 }
 
-// Rename changes an app's identity from oldName to newName. There is no atomic file
-// rename, because the name lives in two places - the filename and AppNameID inside
-// the YAML - so this loads the definition, rewrites AppNameID, saves it under the new
-// name (which re-validates the name), and removes the old definition.
-//
-// It refuses to overwrite an existing app, and to rename a running one - its
-// container is named after the old name and would be orphaned (the renamed definition
-// could no longer stop it); stop it first.
+// Rename rewrites AppNameID and saves under the new name, since the name lives in the file and in
+// the YAML. It refuses to overwrite, and to rename a running app whose container would be orphaned.
 func (svc Service) Rename(oldName, newName string) error {
 	oldName, newName = strings.TrimSpace(oldName), strings.TrimSpace(newName)
 	switch {
@@ -346,3 +378,43 @@ func (svc Service) Logs(name string, tail int) (string, error) { return svc.runt
 // Do runs a user-facing runtime command (restart/inspect/logs passthrough) with the
 // host's stdio - for the CLI, where streaming output is wanted.
 func (svc Service) Do(args []string) error { return svc.runtime.Do(args) }
+
+// checkLaunchSources confirms the host files and device nodes a launch needs actually exist.
+// Validation deliberately does not read the filesystem, and podman cannot report it: StartApp is
+// detached with nil stdio, so a missing -v source writes its error to /dev/null and zcr exits 0.
+func checkLaunchSources(cfg schema.AppConfig, opt options.HostOptions) error {
+	for _, configFile := range cfg.Configs {
+		source := filepath.Join(opt.BundleDir, configFile.BundlePath)
+		info, err := os.Stat(source)
+		if err != nil {
+			return fmt.Errorf("%s: Configs %q: %w\nthe app's bundle is %s; put the file there, or correct BundlePath",
+				cfg.AppNameID, configFile.BundlePath, err, opt.BundleDir)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("%s: Configs %q resolves to a directory (%s); name the file itself",
+				cfg.AppNameID, configFile.BundlePath, source)
+		}
+		// Resolve symlinks and require the result to stay inside the bundle. Validation forbids
+		// ".." in the path, but podman follows a symlink IN the bundle to wherever it points,
+		// and the YAML is the review surface while the symlink is not.
+		real, err := filepath.EvalSymlinks(source)
+		if err != nil {
+			return fmt.Errorf("%s: Configs %q: %w", cfg.AppNameID, configFile.BundlePath, err)
+		}
+		bundle, err := filepath.EvalSymlinks(opt.BundleDir)
+		if err != nil {
+			return fmt.Errorf("%s: the app's bundle %s: %w", cfg.AppNameID, opt.BundleDir, err)
+		}
+		if !strings.HasPrefix(real, bundle+string(filepath.Separator)) {
+			return fmt.Errorf("%s: Configs %q leads outside the app's bundle (to %s); a config file has to live in the bundle it is read from, so what a reviewer reads is what gets mounted",
+				cfg.AppNameID, configFile.BundlePath, real)
+		}
+	}
+	for _, device := range append(append([]string{}, cfg.AudioMeta.Playback.Devices...), cfg.AudioMeta.Microphone.Devices...) {
+		if _, err := os.Stat(device); err != nil {
+			return fmt.Errorf("%s: AudioMeta names %s, which is not on this host: %w\nthe card numbering moves between boots; check `ls /dev/snd`",
+				cfg.AppNameID, device, err)
+		}
+	}
+	return nil
+}

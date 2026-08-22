@@ -1,26 +1,20 @@
 package schema
 
-// How a fixed-size guest screen is actually realised, kept here because both the authoring
-// side (which must refuse a size that cannot work) and the runtime (which must ask for it)
-// need the same answer, and two copies of these limits would drift.
+// How a fixed-size guest screen is realised, kept here because the authoring side and the runtime need
+// the same answer and two copies of these limits would drift.
 //
-// A guest with no display driver keeps whatever mode the firmware gave it at boot, and the
-// firmware learns the mode from an EDID the emulated display generates. That EDID is a real
-// monitor descriptor with real field widths, so three separate limits apply, all measured
-// against OVMF rather than assumed - and every one of them fails the same silent way, by
-// falling back to 1280x800 with no error anywhere.
+// A guest with no display driver keeps the mode the firmware gave it at boot, and the firmware learns
+// it from an EDID the emulated display generates. That EDID has real field widths, so three limits
+// apply, all measured against OVMF - and each fails the same silent way, falling back to 1280x800.
 
 // GuestDisplayMaxPixels is the largest value the EDID's active-pixel fields can hold. They
 // are 12 bits wide, so 4096 in either direction is not representable: a 4096x2160 guest
 // comes up at 1280x800, while 3840x2400 is fine.
 const GuestDisplayMaxPixels = 4095
 
-// guestDisplayRefreshRates are tried highest first. The rate is close to cosmetic for a
-// guest - the framebuffer is virtual and the host compositor decides when anything is
-// actually shown - but it is a multiplier on the EDID's pixel clock, and that clock is a
-// 16-bit field in units of 10 kHz. QEMU generates the EDID at 75 Hz by default, which is
-// what puts 4K out of reach: 3840x2160 overflows the field at 75 Hz and at 60 Hz, and fits
-// at 50 Hz.
+// guestDisplayRefreshRates are tried highest first. The rate is close to cosmetic for a guest, but it
+// multiplies the EDID's pixel clock, which is a 16-bit field in units of 10 kHz. QEMU defaults to
+// 75 Hz, which is what puts 4K out of reach: 3840x2160 overflows at 75 and at 60, and fits at 50.
 var guestDisplayRefreshRates = []int{60000, 50000, 30000}
 
 // GuestDisplayMode is the emulated display's configuration for one screen size.

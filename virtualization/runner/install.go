@@ -15,16 +15,12 @@ import (
 	"github.com/crispuscrew/zinc/virtualization/runner/domain/qemu"
 )
 
-// `zvr install` produces a base disk by running an OS installer, for guests that have no
-// cloud image to start from - Windows above all.
+// `zvr install` produces a base disk by running an OS installer, for guests with no cloud image to
+// start from - Windows above all.
 //
-// It deliberately takes flags rather than an app name. An app config pins its base image by
-// digest, and a disk that does not exist yet has no digest, so requiring one here would be
-// a chicken-and-egg: you could not author the app until the disk existed, and could not
-// create the disk without the app. Install first, pin the result, then author the app
-// against it. That also keeps the rule that a pinned base is never written to intact -
-// installation is how the base comes into being, not something done to a base that already
-// has one.
+// It takes flags rather than an app name deliberately: an app pins its base by digest, and a disk
+// that does not exist yet has no digest. Install first, pin the result, then author the app. That
+// also keeps intact the rule that a pinned base is never written to.
 const installUsage = `usage: zvr install --disk PATH --media ISO [--media ISO]... [options]
 
   --disk PATH        the disk to install onto; created if missing
@@ -47,6 +43,23 @@ type mediaList []string
 func (list *mediaList) String() string { return strings.Join(*list, ",") }
 func (list *mediaList) Set(value string) error {
 	*list = append(*list, value)
+	return nil
+}
+
+// checkQemuPath screens a path that becomes a qemu -drive property. `zvr install` builds its config by
+// hand and never calls validate.Validate, and this is the one path that BOOTS from the medium.
+//
+// A comma is the whole problem: qemu separates -drive properties with commas and resolves a duplicate
+// key to the LAST one, so a path containing ",file=/elsewhere" appends a second file= that replaces
+// the approved one. A directory named "Win11.iso,file=/home/u/.ssh" is enough, since Stat succeeds on
+// the literal string. The basename also lands in the QMP and serial socket paths.
+func checkQemuPath(flagName, path string) error {
+	switch {
+	case strings.ContainsAny(path, ",:"):
+		return fmt.Errorf("%s %q: must not contain ',' or ':' - qemu separates -drive properties with commas and resolves a duplicate key to the last one, so those characters append options to the drive rather than staying in the path", flagName, path)
+	case strings.ContainsAny(path, " \t\n\r"), strings.IndexFunc(path, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0:
+		return fmt.Errorf("%s %q: must be a single-line path with no whitespace or control characters", flagName, path)
+	}
 	return nil
 }
 
@@ -89,13 +102,40 @@ func cmdInstall(argv []string) error {
 		}
 	}
 
+	// The enums are read straight into the config below, and an unrecognised value is not an error
+	// downstream: firmware.Prepare treats anything not UEFI as "no firmware", and the machine builder
+	// treats anything not Compatible as virtio. So `--firmware uefi --secure-boot` (the natural typing)
+	// would produce a SeaBIOS machine with no Secure Boot while still emitting the smm and pflash options.
+	switch schema.VMFirmware(*firmwareKind) {
+	case schema.VMFirmwareBIOS, schema.VMFirmwareUEFI:
+	default:
+		return fmt.Errorf("--firmware %q: must be %s or %s (the value is case-sensitive)",
+			*firmwareKind, schema.VMFirmwareBIOS, schema.VMFirmwareUEFI)
+	}
+	switch schema.VMDevices(*devices) {
+	case schema.VMDevicesVirtio, schema.VMDevicesCompatible:
+	default:
+		return fmt.Errorf("--devices %q: must be %s or %s (the value is case-sensitive)",
+			*devices, schema.VMDevicesVirtio, schema.VMDevicesCompatible)
+	}
+	if *secureBoot && schema.VMFirmware(*firmwareKind) != schema.VMFirmwareUEFI {
+		return fmt.Errorf("--secure-boot needs --firmware %s: Secure Boot is a property of the UEFI variable store, and a BIOS machine has none",
+			schema.VMFirmwareUEFI)
+	}
+
 	diskPath, err := filepath.Abs(*disk)
 	if err != nil {
+		return err
+	}
+	if err := checkQemuPath("--disk", diskPath); err != nil {
 		return err
 	}
 	for index, path := range media {
 		absolute, err := filepath.Abs(path)
 		if err != nil {
+			return err
+		}
+		if err := checkQemuPath("--media", absolute); err != nil {
 			return err
 		}
 		if _, err := os.Stat(absolute); err != nil {

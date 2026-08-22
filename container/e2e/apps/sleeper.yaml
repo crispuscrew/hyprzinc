@@ -1,4 +1,4 @@
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 AppNameID: sleeper
 Description: lifecycle scenario - a long-lived isolated app

@@ -1,21 +1,16 @@
 package app
 
-// Multiterminal apps (docs/architecture.md section 9.1). A multiterminal app runs as a
-// detached "holder" container (HolderCmd as PID 1) so it outlives any single
-// terminal; each terminal is a `podman exec -it` session into it, wrapped in the
-// configured emulator. The app lives until the LAST terminal closes - unless it is
-// also StopConditions.Background, which keeps the holder running.
+// Multiterminal apps (docs section 9.1). A multiterminal app runs as a detached "holder" container
+// so it outlives any single terminal; each terminal is a `podman exec -it` into it. The app lives
+// until the LAST terminal closes, unless StopConditions.Background keeps the holder running.
 //
-// Coordination is by filesystem flock, with no central daemon or socket: each
-// terminal is its own detached waiter process. A per-app coordination lock serializes
-// holder start-up and the liveness bookkeeping; each waiter holds an flock on its own
-// marker file for its lifetime (auto-released on death, so a killed terminal cannot
-// wedge the count). The last waiter to exit stops the container.
-//
-// The waiter's three actions (start the holder, run the terminal, stop) are injected
-// so the flock/ref-count logic is testable without podman, an emulator, or a TTY.
+// Coordination is by filesystem flock, with no daemon: each terminal is its own detached waiter
+// holding an flock on its marker file, auto-released on death so a killed terminal cannot wedge the
+// count. The last waiter out stops the container. The waiter's three actions are injected, so the
+// ref-count logic is testable without podman or a TTY.
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -23,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/crispuscrew/zinc/common/domain/schema"
 	"github.com/crispuscrew/zinc/common/domain/schema/validate"
@@ -34,12 +30,9 @@ import (
 // command. /bin/sh is present in any real terminal app image (section 9.1 honesty note).
 const defaultShell = "/bin/sh"
 
-// OpenTerminal spawns one more terminal for a multiterminal app. It builds the derived
-// image if needed, then launches a detached waiter (`<this-binary> __term <name>
-// [--shell]`, in its own session) and returns immediately. The first terminal also
-// starts the holder; subsequent ones attach. shell selects a plain shell over the
-// app's own command. It validates up front so the UI reports common errors
-// synchronously instead of in a silent detached process.
+// OpenTerminal spawns one more terminal: it builds the derived image if needed, launches a detached
+// waiter in its own session, and returns. The first terminal also starts the holder. It validates up
+// front so the UI reports common errors synchronously rather than in a silent detached process.
 func (svc Service) OpenTerminal(cfg schema.AppConfig, opt options.HostOptions, shell bool) error {
 	if err := validate.Validate(cfg); err != nil {
 		return fmt.Errorf("%s: %w", cfg.AppNameID, err)
@@ -66,14 +59,67 @@ func (svc Service) OpenTerminal(cfg schema.AppConfig, opt options.HostOptions, s
 	if shell {
 		argv = append(argv, "--shell")
 	}
+	// The waiter reports back before its terminal opens, because everything that can fail closed
+	// happens first: the pod, the nft ruleset, the security context, the bus proxy. Without this
+	// the launch returned as soon as the process forked, so a refused ruleset or a rejected
+	// context was reported as a started app - the one shape this project refuses everywhere else.
+	statusRead, statusWrite, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("%s: readiness pipe for the terminal: %w", cfg.AppNameID, err)
+	}
+	defer statusRead.Close()
+
 	proc := exec.Command(exe, argv...)
+	proc.ExtraFiles = []*os.File{statusWrite} // becomes termStatusFD in the waiter
 	proc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	proc.Stdout, proc.Stderr = nil, nil // detached: don't corrupt the parent's TUI
 	if err := proc.Start(); err != nil {
+		statusWrite.Close()
 		return fmt.Errorf("%s: open terminal: %w", cfg.AppNameID, err)
 	}
 	go proc.Wait() // reap if the caller (long-lived TUI) outlives the waiter
+	// The parent's copy must go, or the read below never sees EOF when the waiter dies without
+	// answering - precisely the case the timeout should not have to cover.
+	statusWrite.Close()
+
+	return readTermStatus(cfg.AppNameID, statusRead)
+}
+
+// termStatusFD is the descriptor the waiter reports on, matching the holders' convention.
+const termStatusFD = 3
+
+// termReadyTimeout bounds the wait. A first terminal has a pod to create, a ruleset to load and a
+// bus proxy to answer; a later one attaches to a holder that is already up.
+const termReadyTimeout = 30 * time.Second
+
+// readTermStatus blocks until the waiter says the app is up, or says why it is not.
+func readTermStatus(app string, pipe *os.File) error {
+	if err := pipe.SetReadDeadline(time.Now().Add(termReadyTimeout)); err != nil {
+		return err
+	}
+	line, err := bufio.NewReader(pipe).ReadString('\n')
+	if err != nil && line == "" {
+		return fmt.Errorf("%s: the terminal reported nothing: %w", app, err)
+	}
+	line = strings.TrimSpace(line)
+	if rest, ok := strings.CutPrefix(line, "error "); ok {
+		return fmt.Errorf("%s: %s", app, rest)
+	}
+	if line != "ok" {
+		return fmt.Errorf("%s: unreadable status from the terminal: %q", app, line)
+	}
 	return nil
+}
+
+// reportTerm answers OpenTerminal's pipe, once. The descriptor is closed straight after, so the
+// caller stops waiting the moment the answer is in rather than when this process exits.
+func reportTerm(line string) {
+	status := os.NewFile(termStatusFD, "status")
+	if status == nil {
+		return
+	}
+	fmt.Fprintln(status, line)
+	status.Close()
 }
 
 // Term is the blocking waiter that runs inside a `__term` process: it ensures the
@@ -97,9 +143,19 @@ func (svc Service) Term(cfg schema.AppConfig, opt options.HostOptions, shell boo
 		return err
 	}
 	wtr := &waiter{
-		runRoot:     root,
-		background:  cfg.StopConditions.Background,
-		ensureUp:    func() error { return svc.ensureHolder(cfg, opt) },
+		runRoot:    root,
+		background: cfg.StopConditions.Background,
+		ensureUp: func() error {
+			// The fail-closed half of a multiterminal launch runs here, in a detached process.
+			// Reporting its outcome is what makes `zcr term` able to fail at all.
+			err := svc.ensureHolder(cfg, opt)
+			if err != nil {
+				reportTerm("error " + err.Error())
+			} else {
+				reportTerm("ok")
+			}
+			return err
+		},
 		runTerminal: func() error { return svc.runTerminalSession(cfg, opt, shell) },
 		stop:        func() error { return svc.Stop(cfg) },
 	}
@@ -110,7 +166,11 @@ func (svc Service) Term(cfg schema.AppConfig, opt options.HostOptions, shell boo
 // app this runs the enforcer's pre-steps (pod create → nft) so there is no
 // unfiltered-egress window; the holder's `podman run -d` returns at once.
 func (svc Service) ensureHolder(cfg schema.AppConfig, opt options.HostOptions) error {
-	if svc.runtime.Exists(cfg.AppNameID) {
+	// Running, not merely present. A holder runs without --rm whenever the app also sets
+	// KeepAlive or Autorestart, so one that died outside the last-one-out path leaves an Exited
+	// container behind: Exists stays true, this returns as though the holder were up, and the
+	// terminal execs into a corpse. The app is then wedged until someone runs podman by hand.
+	if svc.runtime.IsRunning(cfg.AppNameID) {
 		return nil
 	}
 	steps, err := svc.prepareSteps(cfg, opt)
@@ -128,7 +188,15 @@ func (svc Service) ensureHolder(cfg schema.AppConfig, opt options.HostOptions) e
 	if err != nil {
 		return errors.Join(fmt.Errorf("start %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
 	}
-	appArgs, aerr := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg))
+	opt, err = svc.withAudio(cfg, opt)
+	if err != nil {
+		return errors.Join(fmt.Errorf("start %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
+	}
+	opt, err = svc.withNotify(cfg, opt)
+	if err != nil {
+		return errors.Join(fmt.Errorf("start %s: %w", cfg.AppNameID, err), svc.teardown(cfg, len(steps) > 0))
+	}
+	appArgs, aerr := svc.runtime.AppRunArgs(cfg, opt, svc.attachFlags(cfg, opt))
 	if aerr != nil {
 		return errors.Join(aerr, svc.teardown(cfg, len(steps) > 0))
 	}

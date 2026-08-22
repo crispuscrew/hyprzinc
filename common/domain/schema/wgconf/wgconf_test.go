@@ -102,6 +102,26 @@ func TestParse_EndpointMustBeAnAddress(t *testing.T) {
 	}
 }
 
+// The Endpoint host is interpolated into the tunnel-build script the netfilter helper runs
+// with CAP_NET_ADMIN in the app's namespace, before the nft ruleset closes it. A .conf from
+// a VPN provider is exactly the artefact this feature exists to consume, so the host has to
+// be an address and nothing else. These all passed the older hand-rolled check.
+func TestParse_EndpointCannotCarryShellMetacharacters(t *testing.T) {
+	for _, endpoint := range []string{
+		"[::$(touch /tmp/pwn)::]:51820",
+		"[::`id`::]:51820",
+		"[::;id;::]:51820",
+		"[::a::]:51820",
+		"[2001:db8::7%eth0]:51820",
+	} {
+		err := parseErr("[Interface]\nPrivateKey = k\nAddress = 10.7.0.2/32\n" +
+			"[Peer]\nPublicKey = p\nEndpoint = " + endpoint + "\nAllowedIPs = 0.0.0.0/0\n")
+		if err == nil {
+			t.Errorf("Endpoint %q was accepted; it reaches a privileged sh -c unquoted", endpoint)
+		}
+	}
+}
+
 // This file decides what an app can reach, so a typo must not quietly change that.
 func TestParse_RejectsTheMalformed(t *testing.T) {
 	for name, text := range map[string]string{

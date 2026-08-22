@@ -1,12 +1,7 @@
-// Package runner shells out to the `zcr` binary - Zinc's container runtime - so the
-// creator (zc) can run and manage the apps it authors without importing the runner.
-// This is the whole zc/zcr split: zc writes app files and knows nothing about podman;
-// zcr reads those same files and runs them. They meet only at the on-disk format and at
-// this process boundary.
-//
-// zcr is expected on $PATH (it is installed alongside zc). If it is missing, every
-// runtime action here fails with an actionable message, while authoring (new/edit/
-// validate/list) keeps working - those need only the shared library, not the runtime.
+// Package runner shells out to `zcr` so the creator can run the apps it authors without importing the
+// runner. That is the whole zc/zcr split: they meet only at the on-disk format and this process
+// boundary. zcr is expected on $PATH; if it is missing, runtime actions fail with an actionable
+// message while authoring keeps working.
 package runner
 
 import (
@@ -35,7 +30,6 @@ type Result struct {
 // find locates the zcr binary, returning an actionable error if it is not installed.
 func find() (string, error) { return findBinary(Binary) }
 
-// findBinary locates one of the runtimes by name.
 func findBinary(name string) (string, error) {
 	path, err := exec.LookPath(name)
 	if err != nil {
@@ -88,45 +82,71 @@ func capture(args ...string) (string, error) {
 	return stdout.String(), nil
 }
 
+// safeName screens a name before it becomes an argument to a runner. Two shapes matter: a leading '-'
+// lands in the runner's flag slot, and a name ending in ".yaml" is read by zcr as a FILESYSTEM PATH
+// resolved against zc's working directory - so the store key "notes.yaml" would run ./notes.yaml, a
+// config that never went through the store and that the TUI never displayed.
+func safeName(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty app name")
+	}
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("app name %q cannot begin with '-': it would reach %s as a flag", name, Binary)
+	}
+	if !strings.Contains(name, "/") && strings.HasSuffix(name, ".yaml") {
+		return fmt.Errorf("app name %q cannot end with '.yaml' (%s would read it as a file path; use ./%s for that)", name, Binary, name)
+	}
+	return nil
+}
+
+// captureApp is capture for the commands whose argument is an app name, so the name is
+// screened in one place rather than at each call site.
+func captureApp(verb, name string, extra ...string) (string, error) {
+	if err := safeName(name); err != nil {
+		return "", err
+	}
+	return capture(append([]string{verb, name}, extra...)...)
+}
+
 // Launch starts the app detached: `zcr run <name> --exec` (validate -> build derived
 // image -> lock down egress -> detach). zcr returns once the app is spawned.
 func Launch(name string) error {
-	_, err := capture("run", name, "--exec")
+	_, err := captureApp("run", name, "--exec")
 	return err
 }
 
 // Stop tears the app's pod down: `zcr stop <name>`.
 func Stop(name string) error {
-	_, err := capture("stop", name)
+	_, err := captureApp("stop", name)
 	return err
 }
 
 // Plan returns the launch plan without running anything: `zcr run <name>` (no --exec
 // prints the exact podman command(s) plus any nft ruleset that would be enforced).
 func Plan(name string) (string, error) {
-	return capture("run", name)
+	return captureApp("run", name)
 }
 
 // Build (re)builds the app's derived image and returns zcr's build output.
 func Build(name string) (string, error) {
-	return capture("build", name)
+	return captureApp("build", name)
 }
 
 // OpenTerminal opens one more terminal for a multiterminal app (`zcr term <name>`,
 // `--shell` for a shell). zcr spawns a detached waiter and returns.
 func OpenTerminal(name string, shell bool) error {
-	args := []string{"term", name}
+	var extra []string
 	if shell {
-		args = append(args, "--shell")
+		extra = append(extra, "--shell")
 	}
-	_, err := capture(args...)
+	_, err := captureApp("term", name, extra...)
 	return err
 }
 
 // Logs returns a snapshot of the app's logs: `zcr logs <name>` (no follow - it prints
 // what podman has and exits).
 func Logs(name string) (string, error) {
-	return capture("logs", name)
+	return captureApp("logs", name)
 }
 
 // Resolve pins an image reference to its digest form: `zcr image resolve <ref>`.

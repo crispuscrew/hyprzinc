@@ -18,6 +18,7 @@
 //	zvr reset <app>          delete the guest's disk, returning it to the pinned base
 //	zvr pin <image>          print the sha256 pin for a base image
 //	zvr install --disk ...   run an OS installer to produce a base disk (Windows)
+//	zvr net <app>            what the guest's egress ruleset has seen
 //	zvr console <app>        where to attach for the guest's serial console
 package main
 
@@ -49,6 +50,7 @@ const usage = `usage:
   zvr pin <image.qcow2>         print the sha256 pin to put in a config
   zvr install --disk PATH --media ISO...
                                 run an OS installer to produce a base disk (Windows)
+  zvr net <app> [--json]        what the guest's egress ruleset has seen
   zvr console <app>             print how to attach to the guest's serial console
   zvr version`
 
@@ -96,6 +98,8 @@ func run(argv []string) error {
 		return cmdValidate(svc, rest)
 	case "reset":
 		return cmdReset(svc, rest)
+	case "net":
+		return cmdNet(svc, rest)
 	case "console":
 		return cmdConsole(svc, rest)
 	default:
@@ -103,7 +107,6 @@ func run(argv []string) error {
 	}
 }
 
-// service wires the store and the path layout.
 func service() (app.Service, error) {
 	store, err := fs.Default()
 	if err != nil {
@@ -126,12 +129,16 @@ func cmdRun(svc app.Service, argv []string) error {
 		return err
 	}
 	if flags["--dry-run"] {
-		args, err := svc.Plan(cfg)
+		args, ruleset, err := svc.Plan(cfg)
 		if err != nil {
 			return err
 		}
-		// Printed as one line so it can be copied and run as-is, which is the point: the
-		// operator can see and reproduce exactly what zvr would have started.
+		// The command is one line so it can be copied and run as-is. A filtered guest's rules
+		// are printed above it, because they arrive on stdin and would otherwise be the one
+		// part of the launch a dry-run did not show.
+		if ruleset != "" {
+			fmt.Printf("# loaded into the guest's namespace before qemu starts:\n%s\n", ruleset)
+		}
 		fmt.Println(qemu.Display(args))
 		return nil
 	}

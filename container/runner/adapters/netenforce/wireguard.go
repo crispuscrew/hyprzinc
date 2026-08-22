@@ -97,5 +97,4 @@ func tunnelCommand(cfg schema.AppConfig, image string) (*ports.Command, error) {
 	}, nil
 }
 
-// hasTunnel reports whether the app carries a Zinc-built tunnel.
 func hasTunnel(cfg schema.AppConfig) bool { return !cfg.NetworkMeta.Tunnel.IsZero() }

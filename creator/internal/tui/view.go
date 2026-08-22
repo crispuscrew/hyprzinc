@@ -57,11 +57,13 @@ func (mdl Model) listView() string {
 		if row.running {
 			dot = runDot.Render("●")
 		}
-		name := fmt.Sprintf("%-16s", row.cfg.AppNameID)
+		// The store key, not the config's AppNameID: a row that failed to resolve carries an
+		// unchecked name, and this list is what someone reads before running anything.
+		name := fmt.Sprintf("%-16s", oneLine(row.name, 16))
 		net := fmt.Sprintf("%-10s", netLabel(row.cfg))
-		detail := row.cfg.ImageMeta.Image
+		detail := oneLine(row.cfg.ImageMeta.Image, 96)
 		if row.loadErr != nil {
-			detail = errStyle.Render("(invalid: " + row.loadErr.Error() + ")")
+			detail = errStyle.Render("(invalid: " + oneLine(row.loadErr.Error(), 96) + ")")
 		}
 		line := cursor + dot + " " + name + " " + net + " " + detail
 		if idx == mdl.cursor {
@@ -286,4 +288,35 @@ func netLabel(cfg schema.AppConfig) string {
 		return fmt.Sprintf("net:%d", n)
 	}
 	return "isolated"
+}
+
+// oneLine makes a config-derived string safe to paint into the list.
+//
+// Everything on this screen comes from a file that may have been shared rather than written
+// here, and the renderer splits its output on "\n" - so a newline inside ImageMeta.Image
+// adds a whole fabricated row, and a cursor-movement escape such as "\x1b[A\x1b[K" repaints
+// the row ABOVE, which is how a genuinely isolated app gets shown next to a hostile one's
+// claims. Validation would reject both, but validation runs at save and at launch, never on
+// the display path, so a file that is never runnable can still rewrite the list a reviewer
+// is reading. Drop anything that can move the cursor, and bound the length.
+func oneLine(text string, limit int) string {
+	var bld strings.Builder
+	kept := 0                   // RUNES, not bytes: fmt pads %-16s by runes, and counting bytes cut a Cyrillic
+	for _, char := range text { // or CJK name to roughly a third of the intended width
+		if char < 0x20 || char == 0x7f || (char >= 0x80 && char <= 0x9f) {
+			continue
+		}
+		// Bidi overrides and line/paragraph separators reorder or break a row visually without
+		// being control characters, which is the same problem this function exists for.
+		if char == '\u202e' || char == '\u202d' || char == '\u2028' || char == '\u2029' {
+			continue
+		}
+		if kept >= limit {
+			bld.WriteString("...")
+			break
+		}
+		bld.WriteRune(char)
+		kept++
+	}
+	return bld.String()
 }

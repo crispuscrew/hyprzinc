@@ -24,13 +24,17 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strings"
 
 	"github.com/crispuscrew/zinc/common/domain/schema"
 	"github.com/crispuscrew/zinc/common/domain/schema/validate"
+	"github.com/crispuscrew/zinc/container/runner/adapters/dbusproxy"
 	"github.com/crispuscrew/zinc/container/runner/adapters/host"
+	"github.com/crispuscrew/zinc/container/runner/adapters/notifyfilter"
+	"github.com/crispuscrew/zinc/container/runner/adapters/pipewirectx"
 	"github.com/crispuscrew/zinc/container/runner/adapters/podman"
 	"github.com/crispuscrew/zinc/container/runner/adapters/waylandctx"
 	"github.com/crispuscrew/zinc/container/runner/app"
@@ -71,16 +75,8 @@ const usage = `usage: zcr <command> [args]
 
 <app> is a store name (~/.config/zinc/apps) or a path (has '/' or ends in .yaml).`
 
-// cmdRecheck answers "is this pin stale" - the question a digest alone cannot be asked.
-//
-// It re-resolves ImageMeta.SourceTag and compares the result with the digest actually pinned
-// in ImageMeta.Image. It changes nothing: re-pinning is a decision with a human behind it,
-// because a moved tag is not automatically a tag you want, and an updater that silently
-// followed one would defeat the reason images are pinned at all. This reports; a person (or
-// a tool with a person behind it) decides.
-//
-// Exit status is the machine-readable half, so a checker does not have to parse prose:
-// 0 the pin is current, 1 an error, 2 the tag has moved.
+// cmdRecheck re-resolves ImageMeta.SourceTag and compares it with the pinned digest. It changes
+// nothing: a moved tag is not automatically a tag you want. Exit 0 current, 1 error, 2 moved.
 func cmdRecheck(svc app.Service, argv []string) error {
 	if len(argv) != 1 {
 		return fmt.Errorf("usage: zcr recheck <app>")
@@ -178,6 +174,19 @@ func run(argv []string) error {
 		// It creates the app's own compositor socket, reports back, and holds the
 		// revocation descriptor open until the app container is gone.
 		return cmdWaylandHolder(opt, rest)
+	case pipewirectx.HoldCommand:
+		// Hidden: the per-app audio holder. It creates the app's own PipeWire socket under a
+		// security context, holds the revocation descriptor, and sets the app's permissions
+		// so the directions its config did not grant stay unreachable.
+		return cmdPipeWireHolder(opt, rest)
+	case "__supervise":
+		// Hidden: the per-app supervisor. It outlives this process, waits for the app's
+		// container to be gone, and tears down what the launch built around it.
+		return cmdSupervise(svc, rest)
+	case notifyfilter.HoldCommand:
+		// Hidden: the per-app notification filter. It serves the socket the app was given and
+		// relays to the D-Bus proxy behind it, rewriting the calls NotificationMeta narrows.
+		return cmdNotifyFilter(svc, opt, rest)
 	case "ps":
 		return cmdPs(svc)
 	case "net":
@@ -200,21 +209,16 @@ func cmdRun(svc app.Service, opt options.HostOptions, argv []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loadApp(svc, name)
+	cfg, err := loadLaunchable(svc, name)
 	if err != nil {
 		return err
 	}
-	// Runtime-only volumes (-v/--volume): appended to the loaded config in memory and
-	// never written back to the app YAML. Both branches below validate the whole config
-	// before composing any podman arg, so these runtime mounts are screened by the same
-	// checkVolume field-shift/injection guards as configured Volumes, and the existing
-	// arg-builder mounts them (docs/architecture.md section 3).
+	// Runtime-only volumes: appended in memory, never written back. Both branches validate the whole
+	// config first, so these get the same checkVolume guards as configured Volumes.
 	cfg.Volumes = append(cfg.Volumes, runtimeVolumes...)
 	if execute {
-		// Launch through the service: validate -> build derived image -> lock down -> detach.
 		return svc.Launch(cfg, opt)
 	}
-	// Dry-run: validate and print the exact podman command(s) without running them.
 	if verr := validate.Validate(cfg); verr != nil {
 		return fmt.Errorf("invalid config %s:\n%w", name, verr)
 	}
@@ -254,12 +258,8 @@ func cmdRun(svc app.Service, opt options.HostOptions, argv []string) error {
 // runUsage is the usage line for `zcr run`, shared by its argument errors.
 const runUsage = "usage: zcr run <app> [--exec] [-v HOST:CONTAINER[:OPTIONS]]..."
 
-// parseRunArgs splits `zcr run`'s arguments into the app name, the --exec flag, and any
-// repeated -v/--volume runtime mounts. Flags may appear before or after the app name.
-// Each volume value is HOST:CONTAINER[:OPTIONS] and is turned into an in-memory Volume
-// by parseVolumeSpec; cmdRun appends these to the loaded config (validated there before
-// use). The separated (-v VALUE) and attached (-v=VALUE, --volume=VALUE) forms are both
-// accepted.
+// parseRunArgs splits `zcr run`'s arguments into the app name, --exec, and repeated -v/--volume
+// mounts. Flags may come before or after the name; -v VALUE and -v=VALUE are both accepted.
 func parseRunArgs(argv []string) (name string, execute bool, volumes []schema.Volume, err error) {
 	// --instance is the flag form of the "app@instance" address. Both exist because they are
 	// convenient in different places - a flag reads better in a hand-typed command, an address
@@ -321,12 +321,9 @@ func parseRunArgs(argv []string) (name string, execute bool, volumes []schema.Vo
 	return name, execute, volumes, nil
 }
 
-// parseVolumeSpec parses one runtime -v/--volume value HOST:CONTAINER[:OPTIONS] into an
-// in-memory host-mounted Volume. OPTIONS is a comma list with the same meaning as a
-// configured volume's flags: the default is read-only and non-executable; "rw" makes it
-// writable and "exec" executable ("ro"/"noexec" restate the defaults). HOST and
-// CONTAINER must be non-empty; any ':'/','/whitespace they carry (a podman field-shift)
-// is rejected by the config validation cmdRun runs before this Volume reaches podman.
+// parseVolumeSpec parses HOST:CONTAINER[:OPTIONS] into an in-memory Volume. Default is read-only
+// and non-executable; "rw" and "exec" widen it. Field-shift characters are caught by the config
+// validation cmdRun runs before this reaches podman.
 func parseVolumeSpec(spec string) (schema.Volume, error) {
 	fields := strings.Split(spec, ":")
 	if len(fields) < 2 || len(fields) > 3 {
@@ -376,7 +373,7 @@ func cmdBuild(svc app.Service, argv []string) error {
 	if len(argv) != 1 {
 		return fmt.Errorf("usage: zcr build <app>")
 	}
-	cfg, err := loadApp(svc, argv[0])
+	cfg, err := loadLaunchable(svc, argv[0])
 	if err != nil {
 		return err
 	}
@@ -488,7 +485,7 @@ func cmdTerm(svc app.Service, opt options.HostOptions, argv []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loadApp(svc, name)
+	cfg, err := loadLaunchable(svc, name)
 	if err != nil {
 		return err
 	}
@@ -509,14 +506,9 @@ func cmdTermWaiter(svc app.Service, opt options.HostOptions, argv []string) erro
 	return svc.Term(cfg, opt, shell)
 }
 
-// cmdWaylandHolder is the hidden holder process: it owns one app's Wayland security context
-// for as long as the app runs (docs/architecture.md section 5.2). It exists because `zcr run`
-// detaches and exits, and a security context is revoked by closing a descriptor - so
-// something has to still be there holding it, the same reason the multiterminal path has
-// `__term`.
-//
-// It takes the ADDRESS rather than the runtime name, because the two halves are exactly what
-// it has to tell the compositor: app_id is stable across instances, instance_id is not.
+// cmdWaylandHolder is the hidden holder process owning one app's Wayland security context
+// (section 5.2), because `zcr run` detaches and the context dies with its descriptor. It takes the
+// ADDRESS, not the runtime name: app_id is stable across instances, instance_id is not.
 func cmdWaylandHolder(opt options.HostOptions, argv []string) error {
 	if len(argv) != 1 {
 		return fmt.Errorf("usage: zcr %s <app[@instance]>", waylandctx.HoldCommand)
@@ -529,6 +521,64 @@ func cmdWaylandHolder(opt options.HostOptions, argv []string) error {
 		return fmt.Errorf("usage: zcr %s <app[@instance]>", waylandctx.HoldCommand)
 	}
 	return waylandctx.Hold(addr, opt, podman.WaitGone)
+}
+
+// cmdSupervise is the hidden supervisor. It takes the address so an instanced app resolves, and
+// tears the app down once its container is gone - which is the only thing that does, since every
+// front-end launches through a `zcr` that exits moments later.
+func cmdSupervise(svc app.Service, argv []string) error {
+	if len(argv) != 1 {
+		return fmt.Errorf("usage: zcr __supervise <app[@instance]>")
+	}
+	cfg, err := load(svc, argv[0])
+	if err != nil {
+		return err
+	}
+	return svc.Supervise(cfg, podman.WaitGone)
+}
+
+// cmdNotifyFilter is the hidden notification filter (section 3 NotificationMeta). It takes the
+// app name rather than an address: the filter is per app like its bus and its bundle, because
+// what it enforces is authored content rather than anything an instance carries.
+func cmdNotifyFilter(svc app.Service, opt options.HostOptions, argv []string) error {
+	if len(argv) != 1 {
+		return fmt.Errorf("usage: zcr %s <app[@instance]>", notifyfilter.HoldCommand)
+	}
+	cfg, err := load(svc, argv[0])
+	if err != nil {
+		return err
+	}
+	upstream := dbusproxy.HostSocketPath(opt.RuntimeDir, cfg.AppNameID)
+	if upstream == "" {
+		return fmt.Errorf("%s: no bus socket to filter", cfg.AppNameID)
+	}
+	return notifyfilter.Hold(cfg, upstream, opt, podman.WaitGone)
+}
+
+// cmdPipeWireHolder is the hidden holder process owning one app's PipeWire security context and
+// its permissions (section 3 AudioMeta). Separate from the Wayland holder because it outlives the
+// launch for a second reason: the graph changes while an app runs, and a microphone plugged in an
+// hour later is a new object the app would otherwise hold the default permission on.
+func cmdPipeWireHolder(opt options.HostOptions, argv []string) error {
+	usage := fmt.Errorf("usage: zcr %s <app[@instance]> [%s]", pipewirectx.HoldCommand, pipewirectx.MicrophoneFlag)
+	if len(argv) < 1 || len(argv) > 2 {
+		return usage
+	}
+	addr, err := paths.ParseAddress(argv[0])
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(addr.App) == "" {
+		return usage
+	}
+	capture := false
+	if len(argv) == 2 {
+		if argv[1] != pipewirectx.MicrophoneFlag {
+			return usage
+		}
+		capture = true
+	}
+	return pipewirectx.Hold(addr, capture, opt, podman.WaitGone)
 }
 
 // cmdPs prints the apps podman reports as running, one per line and sorted, so a
@@ -597,12 +647,8 @@ func printPlan(plan []ports.Command) {
 	}
 }
 
-// loadApp resolves an app by store name or by file path. An argument containing a path
-// separator or ending in ".yaml" is read directly; otherwise it is looked up in the store.
-// Every command that needs a config goes through here, which is why the app-type check
-// lives here: one store holds both container and VM apps, and zcr runs only the
-// containers. The passthrough commands that never load a config (inspect, logs) call
-// refuseVM instead.
+// loadApp resolves an app by store name or file path. The app-type check lives here because one
+// store holds both container and VM apps; the passthroughs that never load a config use refuseVM.
 func loadApp(svc app.Service, arg string) (schema.AppConfig, error) {
 	cfg, err := load(svc, arg)
 	if err != nil {
@@ -614,14 +660,60 @@ func loadApp(svc app.Service, arg string) (schema.AppConfig, error) {
 		// launch is exactly the mis-enforcement the network model refuses elsewhere.
 		return schema.AppConfig{}, fmt.Errorf("app %q is a VM app (Type: %s); run it with zvr", cfg.AppNameID, cfg.Type)
 	}
+	// Screen the name, always: the path form accepts whatever the file claims, and AppNameID becomes a
+	// container name, a pod name and a path segment inside an `rm -rf` ("--all", "../..").
+	//
+	// Only the name. Full validation belongs to the verbs that COMPOSE something; loadApp also serves
+	// the verbs acting on a running app, so validating everything here would make any newly tightened
+	// rule leave running apps unstoppable. Refusing to START is safety; refusing to STOP is a wedge.
+	if err := validate.AppName(cfg.AppNameID); err != nil {
+		return schema.AppConfig{}, fmt.Errorf("%s: %w", arg, err)
+	}
 	return cfg, nil
 }
 
-// refuseVM stops a container-only passthrough from being aimed at a VM app. inspect and
-// logs hand the name straight to podman without loading anything, so without this they
-// fail with podman's "no such object" - true, but silent about the actual reason, which
-// is that the app is a guest and zvr owns it. A name that is not a defined app is left
-// alone: it may legitimately be a raw container name.
+// loadLaunchable is loadApp plus full validation, for the verbs that build an argv, an image
+// or a ruleset from a config rather than acting on one that already exists.
+func loadLaunchable(svc app.Service, arg string) (schema.AppConfig, error) {
+	cfg, err := loadApp(svc, arg)
+	if err != nil {
+		return schema.AppConfig{}, err
+	}
+	if err := validate.Validate(cfg); err != nil {
+		return schema.AppConfig{}, err
+	}
+	return cfg, nil
+}
+
+// refuseForgedIdentity refuses a file whose AppNameID belongs to an app in the store.
+//
+// AppNameID is not a label, it is the identity everything downstream reads: the container and pod
+// names, the Wayland app_id the compositor is told, the row `zcr bus` attributes a bus connection
+// to, and the app `zcr net` reports a posture for. A file anywhere on disk could claim
+// `AppNameID: firefox` and be run, and from the outside the result WAS firefox - same container
+// name, same app_id, same attribution row. Every surface Zinc offers to prove what an app is
+// would have agreed with it.
+//
+// The store's own file for that app is the exception: running it by path is running it by name.
+func refuseForgedIdentity(svc app.Service, arg string, cfg schema.AppConfig) error {
+	claimed := strings.TrimSpace(cfg.AppNameID)
+	if claimed == "" || !svc.Exists(claimed) {
+		return nil
+	}
+	stored, serr := filepath.Abs(svc.Path(claimed))
+	given, gerr := filepath.Abs(arg)
+	if serr == nil && gerr == nil && stored == given {
+		return nil // this IS that app's file
+	}
+	return fmt.Errorf("%s claims AppNameID %q, which is a different app in the store: that name is "+
+		"the container name, the Wayland app_id and the bus attribution row, so running this file would "+
+		"make it indistinguishable from %s. Rename it, or run the store's own app by name",
+		arg, claimed, claimed)
+}
+
+// refuseVM keeps inspect and logs off VM apps, which would otherwise fail with podman's "no such
+// object" - true, but silent about zvr owning the app. An unknown name is left alone: it may be a
+// raw container.
 func refuseVM(svc app.Service, name string) error {
 	cfg, err := load(svc, name)
 	if err != nil || cfg.Type != schema.ZincVirtualization {
@@ -638,7 +730,14 @@ func load(svc app.Service, arg string) (schema.AppConfig, error) {
 	if strings.Contains(arg, "/") || strings.HasSuffix(arg, ".yaml") {
 		// A path names a file, and a file is one definition. Instances address the store,
 		// where a name can be run more than once.
-		return svc.LoadFileResolved(arg)
+		cfg, err := svc.LoadFileResolved(arg)
+		if err != nil {
+			return schema.AppConfig{}, err
+		}
+		if err := refuseForgedIdentity(svc, arg, cfg); err != nil {
+			return schema.AppConfig{}, err
+		}
+		return cfg, nil
 	}
 	addr, err := paths.ParseAddress(arg)
 	if err != nil {
@@ -651,15 +750,9 @@ func load(svc app.Service, arg string) (schema.AppConfig, error) {
 	if err != nil {
 		return schema.AppConfig{}, err
 	}
-	// The instance rides on AppNameID from here down, because AppNameID is what every
-	// runtime name already derives from: the pod, the app container, the healthcheck the
-	// dependents wait on, the D-Bus proxy and its socket directory, and everything teardown
-	// removes. Rewriting it once here is what makes an instance a first-class running thing
-	// without threading a second identifier through every adapter - and, more to the point,
-	// without leaving one adapter that forgot to thread it and quietly shares a pod between
-	// two instances that were supposed to be separate.
-	//
-	// An un-instanced app is unchanged: Runtime() gives back the bare name.
+	// The instance rides on AppNameID from here down, because every runtime name derives from it: pod,
+	// container, healthcheck, proxy, socket directory, teardown. Rewriting it once here beats threading
+	// a second identifier through every adapter and missing one. An un-instanced app is unchanged.
 	cfg.AppNameID = addr.Runtime()
 	if err := expandMounts(&cfg, addr); err != nil {
 		return schema.AppConfig{}, err
@@ -667,14 +760,8 @@ func load(svc app.Service, arg string) (schema.AppConfig, error) {
 	return cfg, nil
 }
 
-// expandMounts resolves {state}/{app}/{instance} in the app's host mount paths, so one
-// definition can serve many instances without each one needing its own copy of the config
-// just to point at its own directory.
-//
-// Only the HOST side is templated. The container side is the path the app looks at, which is
-// the same for every instance by design - the whole point is that the app is unaware there is
-// more than one of it, and an app told to find its profile at a different path per instance
-// would have to be configured per instance too.
+// expandMounts resolves {state}/{app}/{instance} in HOST mount paths, so one definition serves many
+// instances. The container side is not templated: the app is meant to be unaware of the others.
 func expandMounts(cfg *schema.AppConfig, addr paths.Address) error {
 	for index := range cfg.Volumes {
 		expanded, err := addr.Expand(cfg.Volumes[index].HostMount)
@@ -683,13 +770,10 @@ func expandMounts(cfg *schema.AppConfig, addr paths.Address) error {
 		}
 		cfg.Volumes[index].HostMount = expanded
 	}
-	for index := range cfg.Configs {
-		expanded, err := addr.Expand(cfg.Configs[index].HostMount)
-		if err != nil {
-			return fmt.Errorf("Configs[%d]: %w", index, err)
-		}
-		cfg.Configs[index].HostMount = expanded
-	}
+	// Configs are deliberately absent here. A bundle path names authored content that ships
+	// with the app, not a runtime location, so {state} and friends have nothing to say about
+	// it - and expanding them produced an absolute path that this config's own validator then
+	// rejected for being absolute, which meant a placeholder in a Config could never work.
 	return nil
 }
 

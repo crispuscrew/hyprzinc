@@ -9,14 +9,10 @@ import (
 	"github.com/crispuscrew/zinc/creator/internal/runner"
 )
 
-// zc authors both app types and runs neither. Which runtime a command goes to is decided
-// by the app's Type, not by the command: `zc stop x` means the same thing to a user
-// whether x is a container or a guest, and the split is zc's job to hide.
-//
-// The two runtimes do not share a vocabulary, so the mapping is explicit below rather than
-// a verbatim argv forward. Where a command has no counterpart it is refused by name - a
-// `zc build` that silently did nothing for a VM would be worse than one that says a guest
-// has no image to build.
+// zc authors both app types and runs neither. Which runtime a command goes to is decided by the app's
+// Type, not by the command, and hiding that split is zc's job. The two runtimes do not share a
+// vocabulary, so the mapping is explicit rather than a verbatim argv forward, and a command with no
+// counterpart is refused by name.
 
 // delegate routes one runtime command at an app to the runtime that owns it.
 func delegate(svc backend.Service, cmd string, argv []string) error {
@@ -40,7 +36,6 @@ func delegate(svc backend.Service, cmd string, argv []string) error {
 	return delegateVM(cmd, name, argv)
 }
 
-// delegateVM translates a command into zvr's vocabulary.
 func delegateVM(cmd, name string, argv []string) error {
 	switch cmd {
 	case "run":
@@ -79,7 +74,6 @@ func loadForDelegate(svc backend.Service, name string) (schema.AppConfig, error)
 	return svc.LoadResolved(name)
 }
 
-// firstPositional returns the first non-flag argument.
 func firstPositional(argv []string) string {
 	for _, arg := range argv {
 		if !strings.HasPrefix(arg, "-") {

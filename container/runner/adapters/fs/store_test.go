@@ -145,7 +145,7 @@ func TestMarshalLoadRoundtrip(t *testing.T) {
 func TestLoad_UnknownKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")
-	const body = `SchemaVersion: 2
+	const body = `SchemaVersion: 3
 Type: ZincContainer
 AppNameID: x
 ImageMeta:

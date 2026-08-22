@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -79,7 +80,9 @@ func TestVMEndToEnd(t *testing.T) {
 
 	// Whatever happens below, do not leave a guest running on the developer's machine.
 	t.Cleanup(func() {
-		_, _ = run(zvr, "stop", appName, "--force")
+		for _, app := range []string{appName, appName + "-filtered", appName + "-pinned"} {
+			_, _ = run(zvr, "stop", app, "--force")
+		}
 	})
 
 	digest, err := run(zvr, "pin", base)
@@ -196,6 +199,77 @@ func TestVMEndToEnd(t *testing.T) {
 		assertLoopbackOnly(t, sshPort)
 	})
 
+	t.Run("filtered_guest_boots_and_publishes", func(t *testing.T) {
+		// A guest that declares egress lists runs inside a pasta namespace with an nftables
+		// ruleset loaded before qemu execs. The rules themselves are asserted by unit tests
+		// and against a real namespace; what only a booted guest can show is that the wrapper
+		// does not break the launch - and that a forwarded port still arrives, since qemu's
+		// own hostfwd now binds inside the namespace where the host cannot reach it.
+		if _, err := exec.LookPath("pasta"); err != nil {
+			t.Skip("pasta not installed; skipping the filtered-guest scenario")
+		}
+		filtered := appName + "-filtered"
+		port := sshPort + 1
+		out, err := run(zc, "new", filtered, "--vm",
+			"--image", base, "--base-digest", digest,
+			"--memory", "512", "--vcpus", "2", "--disk", "1",
+			"--display", "None",
+			"--forward", fmt.Sprintf("%d:22", port),
+			"--desc", "end-to-end guest, egress filtered")
+		if err != nil {
+			t.Fatalf("zc new --vm: %v\n%s", err, out)
+		}
+		// The list is authored by hand: an egress allowance is not something `zc new` takes a
+		// flag for, and this scenario is about the runtime rather than the authoring path.
+		path := filepath.Join(home, "config", "zinc", "apps", filtered+".yaml")
+		body, rerr := os.ReadFile(path)
+		if rerr != nil {
+			t.Fatalf("reading the authored guest: %v", rerr)
+		}
+		// Replace the empty list zc wrote rather than appending a second NetworkMeta block,
+		// which YAML refuses as a duplicate key.
+		const empty = "    NetworkLists: []"
+		if !strings.Contains(string(body), empty) {
+			t.Fatalf("expected an empty NetworkLists to fill in, got:\n%s", body)
+		}
+		// A blacklist, so the ruleset is allow-all-except and the guest can still finish
+		// booting. A whitelist that named only one destination would also starve cloud-init,
+		// which is correct behaviour but tests the boot rather than the namespace.
+		withLists := strings.Replace(string(body), empty,
+			"    NetworkLists:\n        - Blacklist: true\n          IPv4CIDR: [\"192.0.2.0/24\"]", 1)
+		if werr := os.WriteFile(path, []byte(withLists), 0o600); werr != nil {
+			t.Fatal(werr)
+		}
+		if out, err := run(zc, "validate", filtered); err != nil {
+			t.Fatalf("a guest with an egress list should validate: %v\n%s", err, out)
+		}
+
+		if out, err := run(zvr, "run", filtered); err != nil {
+			t.Fatalf("zvr run (filtered): %v\n%s", err, out)
+		}
+		defer func() { _, _ = run(zvr, "stop", filtered, "--force") }()
+
+		if out, err := run(zvr, "status", filtered); err != nil || !strings.Contains(out, "running") {
+			t.Fatalf("a filtered guest should be running, got %q (%v)", out, err)
+		}
+		// The whole path in one assertion: the namespace was made, the ruleset loaded, qemu
+		// started inside it, the guest booted, and pasta forwarded the published port back to
+		// the host.
+		if !waitForPort(port, 120*time.Second) {
+			t.Fatal("the filtered guest never answered on its forwarded port within 120s")
+		}
+
+		// Stopping has to take the namespace with it. This is the half that was broken: qemu is
+		// pid 1 inside pasta's PID namespace, so its pidfile said 1, and zvr signalled init.
+		if out, err := run(zvr, "stop", filtered); err != nil {
+			t.Fatalf("zvr stop (filtered): %v\n%s", err, out)
+		}
+		if out, _ := run(zvr, "ps"); strings.Contains(out, filtered) {
+			t.Errorf("ps still lists the filtered guest after stop: %s", out)
+		}
+		assertNothingLeftBehind(t, filtered)
+	})
+
 	t.Run("graceful_stop", func(t *testing.T) {
 		start := time.Now()
 		if out, err := run(zvr, "stop", appName); err != nil {
@@ -227,6 +301,54 @@ func TestVMEndToEnd(t *testing.T) {
 }
 
 // requireHost skips unless this machine can actually run an accelerated guest.
+// assertNothingLeftBehind fails if a stopped guest still has a process on this host.
+//
+// `zvr ps` cannot answer this - it reads pidfiles, which stop removes - so a leaked guest is
+// invisible to it, and a pasta wrapper always was. Only /proc answers "is anything running".
+func assertNothingLeftBehind(t *testing.T, app string) {
+	t.Helper()
+	// A moment for a guest that has just been signalled, and for the pasta whose namespace
+	// empties as a result: neither exits the instant stop returns.
+	deadline := time.Now().Add(10 * time.Second)
+	var left []string
+	for time.Now().Before(deadline) {
+		if left = survivors(app); len(left) == 0 {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Errorf("%s was stopped but these processes are still running:\n  %s",
+		app, strings.Join(left, "\n  "))
+}
+
+// survivors lists this host's processes belonging to one app's guest: its qemu, and the
+// pasta whose command line carries the qemu argv it was asked to wrap.
+func survivors(app string) []string {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var found []string
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil {
+			continue // exited while we were looking, or not ours
+		}
+		argv := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+		if len(argv) == 0 || !strings.Contains(strings.Join(argv, " "), app) {
+			continue
+		}
+		if strings.Contains(argv[0], "qemu-system") || strings.Contains(argv[0], "pasta") {
+			found = append(found, fmt.Sprintf("pid %d: %s", pid, strings.Join(argv, " ")))
+		}
+	}
+	return found
+}
+
 func requireHost(t *testing.T) {
 	t.Helper()
 	for _, binary := range []string{"qemu-system-x86_64", "qemu-img", "xorriso"} {

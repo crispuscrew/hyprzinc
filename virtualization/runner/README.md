@@ -5,13 +5,14 @@ split by `Type`, with each runner taking the apps it owns and refusing the other
 
 ```sh
 zvr run <app>            boot a guest (detached; the window, if any, is qemu's)
-zvr run <app> --dry-run  print the exact qemu command line, change nothing
+zvr run <app> --dry-run  print the exact command line and ruleset, change nothing
 zvr stop <app> [--force] shut it down (ACPI power button, or signal the process)
 zvr ps                   running guests
 zvr status <app>         one guest's state
 zvr validate <app>       check a config, run nothing
 zvr reset <app>          delete the guest's disk, back to the pinned base
 zvr pin <image.qcow2>    print the sha256 pin to put in a config
+zvr net <app> [--json]   what the guest's egress ruleset has seen
 zvr console <app>        where to attach for the serial console
 ```
 
@@ -54,6 +55,32 @@ who can already write to your image directory, since they can rewrite the cache 
 **Stopping is graceful by default.** `zvr stop` presses the guest's ACPI power button over
 QMP and waits, so the guest's own OS flushes and unmounts; `--force` signals the process
 instead, for a guest that has stopped answering.
+
+## The network
+
+A guest that declares `NetworkLists` runs inside a network namespace of its own, made by
+`pasta --config-net`, with an nftables ruleset loaded before qemu execs - so it never exists on
+an unfiltered network. The rules are rendered by the same code a container's are, so a
+`NetworkList` means one thing across both runtimes.
+
+```sh
+zvr net <app>            what the ruleset has counted, per rule
+zvr net <app> --json     the same, for a desktop to read
+zvr run <app> --dry-run  the ruleset and the command line, without running either
+```
+
+Two things are easy to get wrong and are handled for you:
+
+- **Name a resolver.** If your lists are allowances, the chain defaults to drop, and DNS goes
+  with everything else - qemu asks the host's resolver and your own rules refuse it. Put one in
+  `NetworkMeta.DNSServers` and the guest is pointed at it. `zc` warns if you forget.
+- **`ForwardPorts` is published by pasta**, not by qemu, since qemu's own forward would bind
+  inside the namespace where nothing on the host can reach it.
+
+**A guest with no lists is unfiltered.** It keeps qemu's user-mode NAT and reaches whatever the
+host can. This is the opposite of a container with no lists, which gets no network at all, so it
+is worth saying plainly: for a guest, an empty `NetworkLists` is the *weaker* posture, not the
+stronger one. `zvr net` reports which of the two a running guest is in.
 
 ## Display
 

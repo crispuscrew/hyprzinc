@@ -20,16 +20,13 @@ type App struct {
 	Notes   []string
 }
 
-// ToApps turns a compose project into one app definition per service, in a stable order.
-// Pure: it neither reads nor writes anything, and in particular it does not pin an image -
-// that needs a registry, and the caller decides whether to go and ask one.
+// ToApps turns a compose project into one app definition per service, in a stable order. Pure: it
+// does not pin an image, since that needs a registry.
 //
-// The governing rule is that compose describes what a service MAY do and Zinc describes
-// what an app MAY do, and those are not the same sentence. A compose service has full
-// network access because compose has no way to say otherwise; reading that as "this app
-// wants full network access" would import a posture nobody chose. So the import is
-// fail-closed: an app arrives with no NetworkLists, which is no network at all, and the
-// notes say so. Published ports are the exception, because they are stated, not inferred.
+// compose describes what a service MAY do and has no way to say a service should not have full
+// network access, so reading that as "this app wants full network access" would import a posture
+// nobody chose. The import is fail-closed: no NetworkLists, which is no network, and the notes say
+// so. Published ports are the exception, being stated rather than inferred.
 func ToApps(project Project) []App {
 	names := make([]string, 0, len(project.Services))
 	for name := range project.Services {
@@ -70,10 +67,6 @@ func serviceToApp(name string, project Project) App {
 			strings.Join(argv, " "), head)
 	}
 	if len(service.Entrypoint) == 0 && len(service.Command) > 0 {
-		// compose's `command` replaces the image's CMD and leaves its ENTRYPOINT in place;
-		// Zinc has one field and it becomes podman's --entrypoint, which replaces the
-		// ENTRYPOINT instead. On the images where that matters most - postgres, redis, mysql -
-		// the entrypoint script is what creates the data directory and drops privileges.
 		note("command %q became the Entrypoint. In compose, `command` replaces the image's CMD and its ENTRYPOINT still runs; here it replaces the ENTRYPOINT. If this image has a setup entrypoint (postgres, redis, mysql and friends all do), it will no longer run.",
 			strings.Join(service.Command, " "))
 	}
@@ -178,15 +171,10 @@ func appName(service string) string {
 	return name
 }
 
-// entrypoint takes the one executable Zinc runs, and reports the full argv it came from so
-// the caller can say what was dropped. Zinc's Entrypoint is a single token handed to
-// podman's --entrypoint, while compose's is an argv.
-//
-// A compose entrypoint written as one string is shell-split, which is compose's own rule
-// and not a guess: `command: nginx -g daemon off;` is four words there. Taking the whole
-// string as the executable would produce an app whose entrypoint is a filename with spaces
-// in it - one that cannot exist, fails at exec time, and passes validation on the way
-// through, since nothing about it is malformed.
+// entrypoint takes the one executable Zinc runs and reports the argv it came from, so the caller can
+// say what was dropped: Zinc's Entrypoint is a single token for podman's --entrypoint, compose's is
+// an argv. A one-string compose entrypoint is shell-split, which is compose's own rule - taking the
+// whole string would produce an entrypoint that is a filename with spaces, valid and unexecutable.
 func entrypoint(service Service) (head string, argv []string) {
 	source := service.Entrypoint
 	if len(source) == 0 {
@@ -206,11 +194,9 @@ func entrypoint(service Service) (head string, argv []string) {
 	return argv[0], argv
 }
 
-// readyCheck converts a compose healthcheck into a Zinc ReadyCheck, which is argv. The
-// CMD form is argv already. CMD-SHELL is one string for a shell, which is representable
-// as `sh -c <string>`, and is by far the most common form in real files - refusing it
-// would reject most healthchecks that exist. NONE means the file is switching an
-// inherited check off, so there is nothing to import.
+// readyCheck converts a compose healthcheck into a Zinc ReadyCheck, which is argv. CMD is argv
+// already; CMD-SHELL is representable as `sh -c <string>` and is by far the most common form in real
+// files. NONE switches an inherited check off, so there is nothing to import.
 func readyCheck(check *Healthcheck) ([]string, bool) {
 	if check == nil || len(check.Test) == 0 {
 		return nil, false
@@ -267,8 +253,6 @@ func resources(service Service, note func(string, ...any)) schema.ResourcesMeta 
 		if cores, err := strconv.ParseFloat(limits.CPUs, 64); err == nil && cores > 0 {
 			res.MaxCPUCores = cores
 		} else {
-			// Silence here would be the worst kind: a cap the compose file set, quietly
-			// becoming no cap at all, on the tool whose job is to bound what an app takes.
 			note("deploy.resources.limits.cpus %q could not be read, so this app imports with NO cpu limit. Set ResourcesMeta.MaxCPUCores by hand.", limits.CPUs)
 		}
 	}
@@ -333,17 +317,11 @@ func importCapabilities(service Service, note func(string, ...any)) []string {
 			note("cap_add: ALL was dropped: Zinc's baseline is cap-drop ALL, and re-adding every capability would undo the containment this tool is for. Name the capabilities the app actually needs.")
 			continue
 		case "NET_ADMIN", "SYS_ADMIN":
-			// These two are refused rather than noted: NET_ADMIN lets an app flush the egress
-			// ruleset in its own netns and SYS_ADMIN contains it, so importing either from a
-			// third-party file would hand away the boundary this tool exists to hold. The
-			// validator refuses them outright on a filtered app; an imported app has no
-			// NetworkLists by default, so without this they would sail through.
+			// Refused rather than noted: the validator only refuses these on a FILTERED app, and an
+			// imported app has no NetworkLists, so without this they would sail through.
 			note("cap_add: %s was dropped: it would let the app remove its own network lock-down, so it is never granted by an import. Add it by hand if this app genuinely needs it and you accept what it means.", upper)
 			continue
 		}
-		// Every other capability is carried, and said out loud: a capability re-added on top
-		// of cap-drop ALL is a deliberate widening, and it should not arrive silently just
-		// because someone else's file asked for it.
 		note("cap_add: %s was carried over - it is granted on top of Zinc's cap-drop ALL baseline. Drop it if the app does not need it.", upper)
 		caps = append(caps, upper)
 	}
@@ -356,15 +334,12 @@ func importCapabilities(service Service, note func(string, ...any)) []string {
 	return caps
 }
 
-// importVolumes reads compose's short-form mounts. A host path becomes a bind mount with
-// the options the file gave, defaulting - unlike compose - to read-only and noexec, since
-// an unqualified compose mount is read-write and this is the fail-closed reading of an
-// unstated intent. A named volume has no host path and no Zinc equivalent, so it is
-// reported rather than invented.
+// importVolumes reads compose's short-form mounts. A host path becomes a bind mount defaulting -
+// unlike compose - to read-only and noexec, the fail-closed reading of an unstated intent. A named
+// volume has no Zinc equivalent and is reported rather than invented.
 //
-// Keys are deliberately not derived from mounts. compose has no notion of an ssh or gpg
-// key, so any guess would come from a path looking key-shaped, and being wrong would
-// either mount a credential the author did not mean to share or move one the app needs.
+// Keys are deliberately not derived from mounts: any guess would come from a path looking key-shaped,
+// and being wrong either shares a credential or moves one the app needs.
 func importVolumes(service Service, note func(string, ...any)) []schema.Volume {
 	var volumes []schema.Volume
 	for _, mount := range service.Volumes {
@@ -379,10 +354,6 @@ func importVolumes(service Service, note func(string, ...any)) []schema.Volume {
 			continue
 		}
 		if !strings.HasPrefix(host, "/") {
-			// `./data` is relative to the COMPOSE FILE, and `~` is the shell's. Zinc stores an
-			// absolute host path and the runner hands it to podman from wherever it happens to
-			// be running, so keeping either verbatim mounts a different directory than the file
-			// meant - silently, and podman creates the missing one rather than failing.
 			note("volume %q was dropped: %q is relative to the compose file (or to a shell's home), and Zinc mounts absolute host paths. Re-add it with the full path.", mount, host)
 			continue
 		}

@@ -5,15 +5,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/crispuscrew/zinc/common/domain/nftrules"
 	"github.com/crispuscrew/zinc/common/domain/schema"
 )
 
-// The VM rules. They are stricter than they strictly need to be in one specific way: a
-// field this build does not implement for a VM app is an ERROR rather than something
-// quietly ignored. A config whose Capabilities or NetworkLists look configured but do
-// nothing is worse than one that refuses to save, because the author believes a boundary
-// exists that is not there. This mirrors how the container network model rejects what it
-// cannot enforce instead of half-applying it.
+// The VM rules. Stricter than strictly necessary in one way: a field this build does not implement for
+// a VM app is an ERROR rather than quietly ignored, because a config whose Capabilities look
+// configured but do nothing is worse than one that refuses to save.
 
 // fileDigestRE is a bare sha256 pin: "sha256:" + 64 hex, anchored at both ends. Unlike
 // digestRE (which matches the @sha256:... tail of a container reference) this pins a
@@ -57,7 +55,6 @@ func checkVirtualization(cfg schema.AppConfig, add addFunc) {
 			virt.Firmware, schema.VMFirmwareBIOS, schema.VMFirmwareUEFI, schema.VMFirmwareBIOS)
 	}
 	if virt.SecureBoot && virt.Firmware != schema.VMFirmwareUEFI {
-		// Secure Boot is a UEFI mechanism; there is nothing for it to attach to on BIOS.
 		add("VirtualizationMeta.SecureBoot: requires Firmware %s", schema.VMFirmwareUEFI)
 	}
 
@@ -96,12 +93,8 @@ func checkBaseImage(image, digest string, add addFunc) {
 	case hasUnsafe(image):
 		add("ImageMeta.Image %q: must be a single-line path (no whitespace or control characters)", image)
 	case strings.ContainsRune(image, ','):
-		// Same reason as InstallMedia below: a comma is qemu's -drive property separator, so
-		// it appends options rather than staying inside the path.
 		add("ImageMeta.Image %q: must not contain ',' - it separates qemu's -drive properties, so a comma appends options to the drive rather than staying in the path", image)
 	case !filepath.IsAbs(image):
-		// Resolved by whichever process happens to run zvr otherwise: a relative base would
-		// mean a different disk depending on the working directory a hotkey inherited.
 		add("ImageMeta.Image %q: must be an absolute path for a VM app (a relative base resolves differently depending on where the launcher was started)", image)
 	case hasDotDot(image):
 		add("ImageMeta.Image %q: must not contain a '..' segment", image)
@@ -139,13 +132,6 @@ func checkInstallMedia(index int, media string, add addFunc) {
 	case hasUnsafe(media):
 		add("VirtualizationMeta.InstallMedia[%d] %q: must be a single-line path (no whitespace or control characters)", index, media)
 	case strings.ContainsRune(media, ','):
-		// A comma separates qemu's -drive properties, so it does not stay inside the path:
-		// it appends options to the drive. qemu resolves a duplicate key to the LAST one, so
-		// a second file= in the tail replaces the absolute path this check just approved,
-		// and qemu will happily open a URL. `zvr install` boots from this medium, which
-		// would make the boot disk remote, mutable and unauthenticated - exactly what
-		// BaseDigest exists to prevent for the main disk. The container side has refused
-		// ',' in mount paths since 0.1 for the same reason.
 		add("VirtualizationMeta.InstallMedia[%d] %q: must not contain ',' - it separates qemu's -drive properties, so a comma appends options to the drive rather than staying in the path", index, media)
 	case !filepath.IsAbs(media):
 		add("VirtualizationMeta.InstallMedia[%d] %q: must be an absolute path", index, media)
@@ -162,8 +148,6 @@ func checkForward(index int, forward schema.PortForward, add addFunc) {
 		add("VirtualizationMeta.ForwardPorts[%d].GuestPort %d: must be 1-65535", index, forward.GuestPort)
 	}
 	if forward.HostPort > 0 && forward.HostPort < 1024 {
-		// Rootless qemu cannot bind a privileged port, so this would fail at launch with a
-		// bind error that says nothing about the config that caused it.
 		add("VirtualizationMeta.ForwardPorts[%d].HostPort %d: must be >= 1024 (zvr runs rootless and cannot bind a privileged port)", index, forward.HostPort)
 	}
 }
@@ -189,9 +173,33 @@ func checkCloudInit(cloudInit schema.CloudInit, add addFunc) {
 		add("VirtualizationMeta.CloudInit.SSHKeyPath %q: must be an absolute path", path)
 	case strings.HasSuffix(path, ".pub"):
 	default:
-		// Not fatal-by-content (we cannot read the file here, this is pure), but a path that
-		// is not a .pub is overwhelmingly a private key, and the seed ISO is guest-readable.
+		// Not fatal-by-content: this package is pure and cannot read the file. A path that is not a
+		// .pub is overwhelmingly a private key.
 		add("VirtualizationMeta.CloudInit.SSHKeyPath %q: must be a PUBLIC key (a .pub path) - the seed ISO is readable by the guest, so a private key placed here would be handed to it", path)
+	}
+}
+
+// checkVMNetwork screens a guest's network lists.
+//
+// A guest gets the same fail-closed egress a container does: qemu runs inside a namespace with
+// the ruleset loaded before it starts. What does not reach a guest is the rest of the
+// vocabulary - a guest has no siblings to link to, no pod to route through, and publishes
+// through ForwardPorts rather than by listening on that namespace - so those shapes are refused
+// here rather than half-applied, which is how every tier of the container model was added too.
+func checkVMNetwork(cfg schema.AppConfig, add addFunc) {
+	for index, list := range cfg.NetworkMeta.NetworkLists {
+		switch {
+		case list.Ingress:
+			add("NetworkLists[%d]: a guest does not publish by listening in its own namespace - use VirtualizationMeta.ForwardPorts", index)
+		case list.Host:
+			add("NetworkLists[%d]: a host-scoped list is not supported for a guest", index)
+		case strings.TrimSpace(list.AppName) != "":
+			add("NetworkLists[%d]: a guest has no sibling apps to link to or route through", index)
+		case list.Via || list.Forward:
+			add("NetworkLists[%d]: routing through or for another app is a container tier and does not reach a guest", index)
+		case len(list.Domains) > 0:
+			add("NetworkLists[%d].Domains: allowing by name is resolved at launch by the container enforcer and is not wired for a guest yet; name the addresses", index)
+		}
 	}
 }
 
@@ -206,14 +214,22 @@ func checkContainerOnlyFields(cfg schema.AppConfig, add addFunc) {
 	}{
 		{len(cfg.Capabilities) > 0, "Capabilities",
 			"Linux capabilities are a container concept; a guest kernel has its own"},
-		{len(cfg.NetworkMeta.NetworkLists) > 0, "NetworkMeta.NetworkLists",
-			"the egress lock-down is nftables inside a container netns and does not reach a guest; use VirtualizationMeta.ForwardPorts"},
 		{len(cfg.Keys) > 0, "Keys",
 			"a VM has no host filesystem to mount keys into; use VirtualizationMeta.CloudInit.SSHKeyPath"},
 		{len(cfg.Volumes) > 0, "Volumes",
 			"sharing a host directory into a guest needs virtiofs, which this build does not implement"},
 		{len(cfg.Configs) > 0, "Configs",
 			"sharing a host directory into a guest needs virtiofs, which this build does not implement"},
+		{len(cfg.Env) > 0, "Env",
+			"a guest gets its environment from its own init, not from the process that started the machine; use VirtualizationMeta.CloudInit or ImageMeta.Install"},
+		{cfg.ReadOnlyRootfs, "ReadOnlyRootfs",
+			"a guest owns its disk and mounts its own root; the overlay is already discarded on reset, which is the VM answer to the same question"},
+		{cfg.DisplayMeta.RequireSecurityContext, "DisplayMeta.RequireSecurityContext",
+			"the Wayland security context is established for a container's own socket; a guest draws into a qemu window and never speaks the host's compositor protocol"},
+		{!cfg.AudioMeta.Monitor.IsZero(), "AudioMeta.Monitor",
+			"a monitor source is a tap on the host's PipeWire mix, and a guest sees an emulated sound card rather than the host graph, so there is nothing there for it to record"},
+		{len(cfg.AudioMeta.Playback.Devices) > 0 || len(cfg.AudioMeta.Microphone.Devices) > 0, "AudioMeta device lists",
+			"a guest cannot be handed a host character device; guest audio is routed through the session's PipeWire, so use `default` (or `none`)"},
 		{cfg.HostTheme, "HostTheme",
 			"the theme bundle is a read-only bind mount, which a guest cannot take"},
 		{!cfg.DBusMeta.IsZero(), "DBusMeta",
@@ -244,14 +260,9 @@ func checkVirtualizationUnset(cfg schema.AppConfig, add addFunc) {
 		schema.ZincVirtualization, cfg.Type)
 }
 
-// checkResolution screens a fixed guest screen size. Both dimensions or neither: a width with
-// no height cannot be turned into a mode, and supplying the missing half would be inventing a
-// screen the author did not ask for.
-//
-// A guest with no display driver takes its resolution from the firmware at boot and keeps it,
-// and the device that carries one has no VGA compatibility - a BIOS guest given it produces no
-// picture at all. That is why the pairing is refused here rather than discovered as a blank
-// window.
+// checkResolution screens a fixed guest screen size. Both dimensions or neither: supplying the missing
+// half would invent a screen the author did not ask for. It also requires UEFI, because the device
+// that carries a fixed mode has no VGA compatibility and a BIOS guest given it shows no picture.
 func checkResolution(virt schema.VirtualizationMeta, add addFunc) {
 	width, height := virt.DisplayWidth, virt.DisplayHeight
 	if width == 0 && height == 0 {
@@ -320,5 +331,26 @@ func checkMac(mac string, add addFunc) {
 	}
 	if strings.EqualFold(mac, "00:00:00:00:00:00") {
 		add("VirtualizationMeta.MacAddress %q: the all-zero address is not usable", mac)
+	}
+}
+
+// guestDNSWarnings surfaces the one way a correct-looking guest silently has no network at all.
+//
+// A list that is an allowance makes the egress chain default-drop. qemu's user-mode networking
+// takes its upstream resolver from the host's, so unless DNSServers names one, every query the
+// guest makes is refused by the guest's own ruleset and nothing resolves. Measured, on a guest
+// that booted, reached its allowed address by IP, and could not look up a name.
+func guestDNSWarnings(cfg schema.AppConfig) []string {
+	if cfg.Type != schema.ZincVirtualization || len(cfg.NetworkMeta.DNSServers) > 0 {
+		return nil
+	}
+	if !nftrules.DefaultDrop(cfg) {
+		return nil
+	}
+	return []string{
+		"NetworkMeta: this guest's lists are allowances, so its egress chain defaults to drop and " +
+			"its DNS is dropped with everything else - it will resolve no names at all. Name a resolver " +
+			"in DNSServers (it is allowed through, and the guest is pointed at it), or give the guest " +
+			"an address it can reach without one.",
 	}
 }

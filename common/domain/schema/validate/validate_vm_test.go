@@ -115,9 +115,6 @@ func TestVM_ContainerOnlyFieldsRejected(t *testing.T) {
 		want   string
 	}{
 		{"capabilities", func(cfg *schema.AppConfig) { cfg.Capabilities = []string{"CAP_NET_ADMIN"} }, "Capabilities"},
-		{"network lists", func(cfg *schema.AppConfig) {
-			cfg.NetworkMeta.NetworkLists = []schema.NetworkList{{Host: true}}
-		}, "NetworkLists"},
 		{"keys", func(cfg *schema.AppConfig) {
 			cfg.Keys = []schema.Key{{Type: schema.SSH, Path: "/home/u/.ssh/id_ed25519"}}
 		}, "Keys"},
@@ -125,7 +122,7 @@ func TestVM_ContainerOnlyFieldsRejected(t *testing.T) {
 			cfg.Volumes = []schema.Volume{{HostMounted: true, HostMount: "/data", InnerMount: "/data"}}
 		}, "Volumes"},
 		{"configs", func(cfg *schema.AppConfig) {
-			cfg.Configs = []schema.Volume{{InnerMount: "/etc/app"}}
+			cfg.Configs = []schema.ConfigFile{{BundlePath: "app.conf", InnerMount: "/etc/app"}}
 		}, "Configs"},
 		{"host theme", func(cfg *schema.AppConfig) { cfg.HostTheme = true }, "HostTheme"},
 		{"multiterminal", func(cfg *schema.AppConfig) {
@@ -448,4 +445,96 @@ func TestVM_ReadyCheckRejected(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "StartConditions.ReadyCheck") {
 		t.Fatalf("ReadyCheck on a VM app: want a not-supported error, got: %v", err)
 	}
+}
+
+// A guest gets the same fail-closed egress a container does, so a self-scoped list is legal now.
+// The rest of the vocabulary is not: a guest has no siblings and publishes through ForwardPorts.
+func TestVM_EgressListsAreAcceptedAndTheRestRefused(t *testing.T) {
+	base := func() schema.AppConfig {
+		cfg := baseVM()
+		cfg.NetworkMeta.NetworkLists = nil
+		return cfg
+	}
+
+	allowed := base()
+	allowed.NetworkMeta.NetworkLists = []schema.NetworkList{{
+		IPv4CIDR: []string{"10.0.0.0/8"},
+		Ports:    []int{443},
+	}}
+	if err := Validate(allowed); err != nil {
+		t.Fatalf("a self-scoped egress list should be legal for a guest now, got: %v", err)
+	}
+
+	refused := []struct {
+		name string
+		list schema.NetworkList
+		want string
+	}{
+		{"ingress", schema.NetworkList{Ingress: true, Ports: []int{8080}}, "ForwardPorts"},
+		{"host scoped", schema.NetworkList{Host: true, IPv4CIDR: []string{"0.0.0.0/0"}}, "host-scoped"},
+		{"a sibling link", schema.NetworkList{AppName: "vpn", IPv4CIDR: []string{"0.0.0.0/0"}}, "no sibling apps"},
+		{"by name", schema.NetworkList{Domains: []string{"example.com"}, Ports: []int{443}}, "name the addresses"},
+	}
+	for _, testCase := range refused {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg := base()
+			cfg.NetworkMeta.NetworkLists = []schema.NetworkList{testCase.list}
+			err := Validate(cfg)
+			if err == nil {
+				t.Fatalf("%s should be refused for a guest", testCase.name)
+			}
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("want an error mentioning %q, got: %v", testCase.want, err)
+			}
+		})
+	}
+}
+
+// A guest whose lists are allowances has no DNS unless it names a resolver: its queries go to the
+// host's, which its own default-drop chain refuses. Measured on a booted guest, and invisible
+// until then, so the author is told at authoring time.
+func TestWarnings_WhitelistGuestWithNoResolver(t *testing.T) {
+	cfg := schema.AppConfig{
+		AppNameID: "guest", Type: schema.ZincVirtualization,
+		NetworkMeta: schema.NetworkMeta{NetworkLists: []schema.NetworkList{
+			{IPv4CIDR: []string{"1.1.1.1/32"}, Ports: []int{443}},
+		}},
+	}
+	if !mentionsDNS(Warnings(cfg)) {
+		t.Errorf("a default-drop guest with no DNSServers should be warned, got %v", Warnings(cfg))
+	}
+
+	// Named a resolver: the rules let it through and the guest is pointed at it.
+	withResolver := cfg
+	withResolver.NetworkMeta.DNSServers = []string{"1.1.1.1"}
+	if mentionsDNS(Warnings(withResolver)) {
+		t.Errorf("a guest that named a resolver should not be warned: %v", Warnings(withResolver))
+	}
+
+	// An all-blacklist guest is allow-all-except, so its DNS is not dropped and nothing is wrong.
+	blacklist := schema.AppConfig{
+		AppNameID: "guest", Type: schema.ZincVirtualization,
+		NetworkMeta: schema.NetworkMeta{NetworkLists: []schema.NetworkList{
+			{Blacklist: true, IPv4CIDR: []string{"192.0.2.0/24"}},
+		}},
+	}
+	if mentionsDNS(Warnings(blacklist)) {
+		t.Errorf("an allow-all-except guest resolves fine, so should not be warned: %v", Warnings(blacklist))
+	}
+
+	// A container is not this warning's business: it gets its resolver from the pod, not from qemu.
+	container := cfg
+	container.Type = schema.ZincContainer
+	if mentionsDNS(Warnings(container)) {
+		t.Errorf("this is a guest-only warning: %v", Warnings(container))
+	}
+}
+
+func mentionsDNS(warns []string) bool {
+	for _, warn := range warns {
+		if strings.Contains(warn, "DNSServers") {
+			return true
+		}
+	}
+	return false
 }

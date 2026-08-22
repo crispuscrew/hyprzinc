@@ -1,6 +1,7 @@
 package disk
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,6 +134,80 @@ func TestVerifyBase_RejectsChangedImage(t *testing.T) {
 	err = VerifyBase(base, digest)
 	if err == nil || !strings.Contains(err.Error(), "does not match the pinned digest") {
 		t.Fatalf("a replaced image should be refused, got: %v", err)
+	}
+}
+
+// qcowHeader builds the first 80 bytes of a qcow2 image: magic, version, the backing-file
+// pointer, and the version 3 incompatible-feature bitmap. Written by hand rather than with
+// qemu-img so the test says what it means and needs no tool on the box.
+func qcowHeader(version uint32, backingOffset uint64, incompatible uint64) []byte {
+	header := make([]byte, 80)
+	copy(header, []byte{'Q', 'F', 'I', 0xfb})
+	binary.BigEndian.PutUint32(header[4:], version)
+	binary.BigEndian.PutUint64(header[8:], backingOffset)
+	binary.BigEndian.PutUint64(header[72:], incompatible)
+	return header
+}
+
+// A digest covers the bytes of the file it names. A qcow2 header can point at another file,
+// and those bytes are inside the digest, so a hostile base pins perfectly and still serves
+// whatever the pointer resolves to - any readable host file, or a URL. Refuse an image that
+// is not self-contained rather than trying to follow the chain.
+func TestVerifyBase_RefusesAnImageThatReferencesAnotherFile(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		header []byte
+		want   string
+	}{
+		{"backing file", qcowHeader(3, 0x200, 0), "a backing file"},
+		{"backing file, v2", qcowHeader(2, 0x200, 0), "a backing file"},
+		// The literal is deliberate. Deriving it from the production constant would make this
+		// test agree with the code by construction, which is exactly how the wrong bit (1<<1,
+		// the corrupt flag) shipped green: 0x04 is what qemu-img actually writes at offset 72
+		// for `-o data_file=x.raw,data_file_raw=on`.
+		{"external data file", qcowHeader(3, 0, 0x04), "an external data file"},
+		// The corrupt flag is a different bit and must not be mistaken for this one.
+		{"corrupt flag is not a data file", qcowHeader(3, 0, 0x02), ""},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir := t.TempDir()
+			base := filepath.Join(dir, "base.qcow2")
+			if err := os.WriteFile(base, testCase.header, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			digest, err := Digest(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The digest is correct, which is the point: the pin matches and the image is
+			// still refused.
+			err = VerifyBase(base, digest)
+			if testCase.want == "" {
+				if err != nil {
+					t.Fatalf("this flag is not an external data file and must not be refused: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("want a refusal naming %q, got: %v", testCase.want, err)
+			}
+		})
+	}
+}
+
+// A self-contained qcow2 is the normal case and must still verify.
+func TestVerifyBase_SelfContainedImageVerifies(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "base.qcow2")
+	if err := os.WriteFile(base, qcowHeader(3, 0, 0), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := Digest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyBase(base, digest); err != nil {
+		t.Fatalf("a self-contained image should verify, got: %v", err)
 	}
 }
 

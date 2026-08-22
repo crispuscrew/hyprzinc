@@ -1,8 +1,7 @@
-// Package app is the imperative shell of zvr: it sequences a launch (validate, verify the
-// pinned base, build the disk and the seed, compose the command line, start the guest)
-// over the pure argv builder and the adapters. The order matters and is deliberate -
-// nothing is created for an app whose config does not validate, and no guest starts from
-// a base image that no longer matches its digest.
+// Package app is the imperative shell of zvr: it sequences a launch (validate, verify the pinned base,
+// build the disk and seed, compose the command line, start the guest) over the pure argv builder and
+// the adapters. The order is deliberate: nothing is created for a config that does not validate, and
+// no guest starts from a base that no longer matches its digest.
 package app
 
 import (
@@ -11,12 +10,14 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/crispuscrew/zinc/common/domain/nftrules"
 	"github.com/crispuscrew/zinc/common/domain/schema"
 	"github.com/crispuscrew/zinc/common/domain/schema/validate"
 	"github.com/crispuscrew/zinc/virtualization/runner/adapters/disk"
 	"github.com/crispuscrew/zinc/virtualization/runner/adapters/firmware"
 	"github.com/crispuscrew/zinc/virtualization/runner/adapters/fs"
 	"github.com/crispuscrew/zinc/virtualization/runner/adapters/machine"
+	"github.com/crispuscrew/zinc/virtualization/runner/adapters/netns"
 	"github.com/crispuscrew/zinc/virtualization/runner/domain/paths"
 	"github.com/crispuscrew/zinc/virtualization/runner/domain/qemu"
 )
@@ -38,18 +39,19 @@ func New(store *fs.Store, layout paths.Paths) Service {
 	return Service{Store: store, Paths: layout, Runtime: machine.Runtime{Paths: layout}}
 }
 
-// Plan returns the exact command line a launch would run, without touching anything. It
-// is what --dry-run prints: the whole point is that an operator can read what their
-// config turns into before a guest exists.
-func (svc Service) Plan(cfg schema.AppConfig) ([]string, error) {
+// Plan returns the exact command line a launch would run, and the ruleset it would load,
+// without touching anything. It is what --dry-run prints: an operator can read what their
+// config turns into before a guest exists, and for a filtered guest the rules are most of
+// what they came to read.
+func (svc Service) Plan(cfg schema.AppConfig) (argv []string, ruleset string, err error) {
 	if err := svc.check(cfg); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	layout, err := svc.machineLayout(cfg, false, false)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return qemu.Args(cfg, layout), nil
+	return netns.Command(cfg, qemu.Args(cfg, layout), svc.Paths.Resolv(cfg.AppNameID))
 }
 
 // Run boots an app's guest.
@@ -99,7 +101,20 @@ func (svc Service) start(cfg schema.AppConfig, installing bool) error {
 	if err != nil {
 		return err
 	}
-	return svc.Runtime.Start(cfg.AppNameID, qemu.Args(cfg, layout), extraEnv)
+	// A guest that declares egress lists runs inside a namespace those lists are enforced in,
+	// with the ruleset loaded before qemu execs - so there is no window in which the guest has
+	// an unfiltered network, for the same reason a container's pod is locked before its app.
+	resolvConf := svc.Paths.Resolv(cfg.AppNameID)
+	if body := netns.ResolvConf(cfg); body != "" && netns.Applies(cfg) {
+		if err := os.WriteFile(resolvConf, []byte(body), 0o600); err != nil {
+			return fmt.Errorf("write the guest's resolver: %w", err)
+		}
+	}
+	argv, ruleset, err := netns.Command(cfg, qemu.Args(cfg, layout), resolvConf)
+	if err != nil {
+		return err
+	}
+	return svc.Runtime.Start(cfg.AppNameID, argv, extraEnv, ruleset)
 }
 
 // machineLayout resolves the host-side pieces a guest's machine needs before qemu starts:
@@ -108,6 +123,9 @@ func (svc Service) machineLayout(cfg schema.AppConfig, installing, startServices
 	name := cfg.AppNameID
 	layout := svc.layout(cfg)
 	layout.Installing = installing
+	// The wrapper is decided here rather than after the argv is built, because it changes the
+	// argv: a forward has to be bound where pasta actually delivers it.
+	layout.Namespaced = netns.Applies(cfg)
 
 	prepared, err := firmware.Prepare(cfg.VirtualizationMeta, svc.Paths.UEFIVars(name), cfg.ImageMeta.Image)
 	if err != nil {
@@ -130,15 +148,10 @@ func (svc Service) machineLayout(cfg schema.AppConfig, installing, startServices
 	return layout, nil
 }
 
-// guestName screens a name that is about to be joined into a state path. Every command that
-// goes through the store already gets this from the store's own guard, but Stop and Reset
-// take the argument straight from argv - and filepath.Join CLEANS `..` segments away rather
-// than refusing them, so an unchecked name reaches outside the state directory entirely.
-//
-// Reset is the one that makes this urgent: it deletes an overlay, a seed ISO, a UEFI
-// variable store and, recursively, a TPM state directory. Unchecked, that is a delete
-// primitive pointed at any path the user can write, reported as success for an app that was
-// never defined. Stop is the same shape aimed at a pidfile.
+// guestName screens a name about to be joined into a state path. Commands going through the store get
+// this from the store's guard, but Stop and Reset take the argument straight from argv - and
+// filepath.Join CLEANS `..` away rather than refusing it. Reset makes it urgent: it deletes an
+// overlay, a seed, a variable store and, recursively, a TPM state directory.
 func guestName(name string) error {
 	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
 		return fmt.Errorf("invalid app name %q", name)
@@ -155,7 +168,36 @@ func (svc Service) Stop(name string, force bool, timeout time.Duration) error {
 	}
 	err := svc.Runtime.Stop(name, force, timeout)
 	firmware.StopTPM(svc.Paths.TPMSocket(name), svc.Paths.TPMPID(name))
+	// Not in Runtime.clean: that also runs at START, and would delete the resolver this
+	// launch had just written.
+	_ = os.Remove(svc.Paths.Resolv(name))
 	return err
+}
+
+// NetCounters reads back what a running guest's ruleset has seen. The bool says whether it has a
+// ruleset at all, observed from the namespace the guest is in rather than from what its config
+// asks for.
+func (svc Service) NetCounters(name string) ([]nftrules.RuleCounter, bool, error) {
+	if err := guestName(name); err != nil {
+		return nil, false, err
+	}
+	state, err := svc.Runtime.State(name)
+	if err != nil {
+		return nil, false, err
+	}
+	if !state.Alive {
+		return nil, false, fmt.Errorf("%s is not running: a guest's counters live in its namespace, which exists only while it does", name)
+	}
+	namespaced, err := netns.Namespaced(state.PID)
+	if err != nil || !namespaced {
+		return nil, false, err
+	}
+	raw, err := netns.Counters(state.PID)
+	if err != nil {
+		return nil, true, err
+	}
+	counters, err := nftrules.ParseCounters(raw)
+	return counters, true, err
 }
 
 // State reports one app's guest.
@@ -175,12 +217,9 @@ func (svc Service) Reset(name string) error {
 	if state.Alive {
 		return fmt.Errorf("%s is running; stop it before resetting its disk", name)
 	}
-	// Everything the guest accumulated, not just its disk. UEFI variables and TPM state are
-	// as much "what this guest became" as the filesystem is: leaving them would return a
-	// freshly installed disk to a firmware still holding boot entries for the old one, and
-	// a TPM holding keys sealed to a machine state that no longer exists. The next run
-	// re-seeds both - the firmware from the variables the install left beside the base
-	// image, so a reset lands exactly where the install did.
+	// Everything the guest accumulated, not just its disk: UEFI variables and TPM state are as much what
+	// this guest became. Leaving them would return a fresh disk to a firmware holding boot entries for the
+	// old one. The next run re-seeds both from what the install left beside the base image.
 	for _, path := range []string{
 		svc.Paths.Overlay(name),
 		svc.Paths.Seed(name),
@@ -212,12 +251,10 @@ func (svc Service) layout(cfg schema.AppConfig) qemu.Layout {
 	return svc.Paths.Layout(cfg.AppNameID, needsProvisioningDisc(cfg.VirtualizationMeta))
 }
 
-// needsProvisioningDisc reports whether this guest has anything to read off the disc. A
-// cloud-init guest reads its identity from it. A guest on the compatible device profile
-// reads zinc-setup.cmd from it, which is the only way Zinc can hand such a guest a driver -
-// so turning cloud-init off, which a Windows guest reasonably would, must not take the
-// script away with it. One predicate for both the build and the attach: two would drift into
-// building a disc nobody mounts, or attaching one nobody built.
+// needsProvisioningDisc reports whether this guest has anything to read off the disc: identity for a
+// cloud-init guest, zinc-setup.cmd for a compatible-profile one - so turning cloud-init off, which a
+// Windows guest reasonably would, must not take the script with it. One predicate for both the build
+// and the attach, or they drift.
 func needsProvisioningDisc(virt schema.VirtualizationMeta) bool {
 	return !virt.CloudInit.Disabled || virt.Devices == schema.VMDevicesCompatible
 }

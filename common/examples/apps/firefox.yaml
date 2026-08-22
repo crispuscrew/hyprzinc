@@ -1,6 +1,6 @@
-# Zinc app definition (schema v2). Copy this as a starting point for a new
+# Zinc app definition (schema v3). Copy this as a starting point for a new
 # container app; see firefox-broken.yaml for what Validate rejects.
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer          # container app (VM support: ZincVirtualization, later)
 
 AppNameID: firefox           # also the container name; [a-z0-9._-], start alphanumeric
@@ -36,8 +36,20 @@ ResourcesMeta:
   PIDsLimit: 512                  # fork-bomb guard
 
 AudioMeta:
-  Pipewire: false
-  LegacyALSA: false
+  Playback: default               # the session's own output device
+  # A browser plays sound; it has no business listening. Both directions are stated, so a
+  # reviewer sees that the microphone was considered and refused rather than forgotten.
+  #
+  # `default` is the session's device, reached through PipeWire. To grant exactly one
+  # microphone and nothing else, name its ALSA nodes instead - that form is enforced by the
+  # kernel rather than by PipeWire:
+  #   Microphone:
+  #     - /dev/snd/controlC0
+  #     - /dev/snd/pcmC0D0c
+  Microphone: none
+  # Recording what OTHER apps are playing is a third capability, and the socket grants it
+  # today whatever this says. Declared so the config states the intent.
+  Monitor: none
 
 HostTheme: true                  # share the host's theme
 

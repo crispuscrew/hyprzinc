@@ -47,7 +47,6 @@ func New(apps []App) *Model {
 	return mdl
 }
 
-// Query is the current filter text.
 func (mdl *Model) Query() string { return mdl.query }
 
 // Type appends text (one or more runes) to the query and refilters.

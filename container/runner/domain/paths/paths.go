@@ -1,16 +1,7 @@
-// Package paths decides two things a container app needs agreed in exactly one place: what
-// an instance of an app is called, and where that instance keeps its state.
-//
-// Both exist because one app definition can be run more than once - a browser for work and
-// one for personal are the same config and must not be the same running thing. The address
-// "app@instance" is what a person types; the runtime name and the state directory are
-// derived from it, here, so `zcr run` creates what `zcr stop` removes and `zcr where`
-// reports.
-//
-// It is pure string work over the environment, so the layout is unit-testable and no caller
-// has to reimplement it. That last part is the point: a desktop that hardcodes the layout
-// becomes a second source of truth the moment either side changes, which is why `zcr where`
-// exists rather than a documented constant.
+// Package paths decides what an instance of an app is called and where it keeps its state, in
+// exactly one place. One definition can run more than once, so the address "app@instance" is what a
+// person types and the runtime name and state directory are derived from it here - which is why
+// `zcr where` exists rather than a documented constant a desktop would copy and drift from.
 package paths
 
 import (
@@ -26,13 +17,8 @@ import (
 // address a person types is the address they get back.
 var instanceRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-// Separator joins app and instance into a runtime object name. Not "@", which is what the
-// address uses, because podman rejects it:
-//
-//	names must match [a-zA-Z0-9][a-zA-Z0-9_.-]*
-//
-// So "@" is the human form and "." is the runtime form, and this package is the only place
-// that knows both.
+// Separator joins app and instance into a runtime object name. Not "@", which podman rejects: names
+// must match [a-zA-Z0-9][a-zA-Z0-9_.-]*. So "@" is the human form and "." the runtime form.
 const Separator = "."
 
 // Address identifies one running thing: an app definition, and optionally which instance of
@@ -81,29 +67,17 @@ func (addr Address) Runtime() string {
 	return addr.App + Separator + addr.Instance
 }
 
-// ParseRuntime recovers the address a runtime name was built from: Runtime() run backwards.
+// ParseRuntime is Runtime() run backwards. It cannot be done on the string alone: an app name may
+// contain dots and an instance may not, so "notes.work" reads either as one app or as "notes"
+// running as instance "work". defined answers which; it is a function because the authority is the
+// store, which this package must not depend on.
 //
-// It cannot be done on the string alone. An app name may contain dots and an instance may
-// not, so "notes.work" reads either as the app "notes.work" or as "notes" running as
-// instance "work" - two readings of one string, and only the set of defined apps can say
-// which was meant. defined answers that. It is a function rather than a list because the
-// authority is the store, which this package must not depend on.
+// The fallback is the whole string as an app name, so a raw container or a deleted app comes back
+// as itself. Undecidable when both readings are defined apps at once: the whole-name reading wins,
+// and those two apps already collide on their podman container name anyway.
 //
-// The fallback is the whole string as an app name with no instance, which is the reading
-// that existed before instances did, so a runtime name from anywhere else (a raw container,
-// an app since deleted) comes back as itself rather than as an invented instance.
-//
-// The one case it cannot decide: an app literally named "notes.work" AND an app "notes" run
-// as instance "work", both defined at once. The whole-name reading wins there, because that
-// name is definitely an app; nothing in the runtime name distinguishes the two, so this is
-// stated rather than papered over. Those two apps already collide on their podman container
-// name, so that ambiguity is a symptom of a naming conflict Zinc cannot support rather than
-// a decision made here.
-//
-// Two callers need this. Attribution maps a running proxy back to the app it serves, and the
-// Wayland security context needs the halves apart after they were folded into AppNameID:
-// app_id must be the SAME string for every instance of an app, and instance_id must differ
-// between them (section 5.2).
+// Two callers need it: attribution, and the Wayland context, whose app_id must be the same for
+// every instance while instance_id must differ (section 5.2).
 func ParseRuntime(name string, defined func(string) bool) Address {
 	name = strings.TrimSpace(name)
 	if defined == nil || defined(name) {
@@ -121,13 +95,9 @@ func ParseRuntime(name string, defined func(string) bool) Address {
 	return Address{App: name}
 }
 
-// StateDir is where this instance's own files live, under $XDG_STATE_HOME (falling back to
-// ~/.local/state, which is what the XDG spec says that variable defaults to). State rather
-// than data because it is what the app accumulates by running - reproducible only in the
-// sense that deleting it resets the instance.
-//
-// Per instance, not per app: the whole reason to have two instances is that they do not
-// share what they accumulate.
+// StateDir is where this instance's files live, under $XDG_STATE_HOME (falling back to
+// ~/.local/state). Per instance, not per app: the reason to have two is that they do not share what
+// they accumulate.
 func StateDir(addr Address) (string, error) {
 	stateHome := os.Getenv("XDG_STATE_HOME")
 	if stateHome == "" {
@@ -144,27 +114,19 @@ func StateDir(addr Address) (string, error) {
 	return dir, nil
 }
 
-// Template placeholders a mount path may use. They exist so one app definition can serve many
-// instances: ZDE's desk manifests carry a mounts field per desk, and without templating every
-// desk would need its own copy of the app just to point at its own directory.
-//
-// {state} is the one that matters, and it is why this lives next to StateDir rather than in a
-// string-utility package: it expands to the same directory `zcr where` reports, so a mount and
-// the answer to "where does this instance keep things" cannot disagree.
+// Template placeholders a mount path may use, so one definition can serve many instances. {state}
+// is why this lives next to StateDir: it expands to the same directory `zcr where` reports, so a
+// mount and that answer cannot disagree.
 const (
 	PlaceholderApp      = "{app}"
 	PlaceholderInstance = "{instance}"
 	PlaceholderState    = "{state}"
 )
 
-// Expand substitutes the placeholders in one path. An un-instanced app expands {instance} to
-// the empty string, which collapses "…/{instance}" to a trailing separator rather than to the
-// literal text - a path with "{instance}" left in it would be created on disk under that name
-// and look like a Zinc bug from the outside.
-//
-// It reports an error rather than silently leaving a placeholder unexpanded, because a mount
-// that was meant to be per-instance and quietly is not would share one directory between two
-// instances that exist precisely so they do not share.
+// Expand substitutes the placeholders in one path. An un-instanced app expands {instance} to empty,
+// collapsing "…/{instance}" to a trailing separator rather than leaving literal text that would be
+// created on disk under that name. An unexpanded placeholder is an error, not a silent pass: a
+// mount meant to be per-instance that quietly is not shares a directory between two instances.
 func (addr Address) Expand(path string) (string, error) {
 	if !strings.Contains(path, "{") {
 		return path, nil
@@ -184,4 +146,14 @@ func (addr Address) Expand(path string) (string, error) {
 			path, PlaceholderState, PlaceholderApp, PlaceholderInstance)
 	}
 	return expanded, nil
+}
+
+// BundleDir is where an app's authored files live, resolved from the app's name rather than from
+// anything a config states. Per app, not per instance: a config file is content the app was
+// authored WITH. Beside the app definition, so `apps/notes.yaml` and `apps/notes/` travel together.
+func BundleDir(configHome, app string) string {
+	if configHome == "" {
+		return ""
+	}
+	return filepath.Join(configHome, "zinc", "apps", app, "configs")
 }

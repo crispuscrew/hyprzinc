@@ -1,9 +1,7 @@
-// Package imgutil is the menu's shared image helper: one hardened decode plus two scalers.
-// The decode is bounded and panic-safe because the paths come from partly-untrusted config
-// (an app's Icon, a wallpaper directory), so a hostile or corrupt file must never block, OOM,
-// or crash the process. Square resizes to a fixed square (icons); Fit resizes to fit a box
-// while preserving aspect ratio (thumbnails). The icons and thumbs packages share it so the
-// decode-safety rules live in exactly one place.
+// Package imgutil is the menu's shared image helper: one hardened decode plus two scalers. The decode
+// is bounded and panic-safe because the paths come from partly-untrusted config (an app's Icon, a
+// wallpaper directory). Square resizes to a fixed square (icons); Fit preserves aspect ratio
+// (thumbnails).
 package imgutil
 
 import (
@@ -21,17 +19,11 @@ import (
 	_ "golang.org/x/image/webp" // register the pure-Go WebP decoder (common for wallpapers)
 )
 
-// Decode reads and decodes an image file, bounded because the path may come from
-// partly-untrusted config: it requires a REGULAR file (so a FIFO cannot block the open, and
-// directories and devices are rejected), caps the bytes read at maxBytes, refuses an image
-// whose decoded form would exceed maxDecodedBytes, and recovers from a decoder panic. Any
-// failure returns nil, which callers render as no image.
-//
-// The budget is in decoded BYTES rather than pixels because pixels do not bound memory: the
-// same pixel count costs one byte per pixel as a paletted GIF and eight as a 16-bit-per-channel
-// PNG, so a pixel cap that looks safe for a photograph is off by 8x for a file crafted to be
-// deep-coloured. The header says which it is before anything is decoded, so the cap can be
-// applied to the actual allocation.
+// Decode reads and decodes an image file, bounded because the path may come from partly-untrusted
+// config: a REGULAR file only (so a FIFO cannot block the open), capped bytes read, a decoded-size
+// ceiling, and a recovered decoder panic. Any failure returns nil, which callers render as no image.
+// The budget is in decoded BYTES, since the same pixel count costs one byte per pixel as a paletted
+// GIF and eight at 16 bits per channel.
 func Decode(path string, maxBytes, maxDecodedBytes int64) (result image.Image) {
 	defer func() {
 		if recover() != nil {

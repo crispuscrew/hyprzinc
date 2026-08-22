@@ -1,4 +1,4 @@
-SchemaVersion: 2
+SchemaVersion: 3
 Type: ZincContainer
 AppNameID: consumer
 Description: tier-2 scenario - links to the producer to reach its published port

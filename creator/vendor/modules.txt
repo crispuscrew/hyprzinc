@@ -47,6 +47,7 @@ github.com/clipperhouse/stringish
 github.com/clipperhouse/uax29/v2/graphemes
 # github.com/crispuscrew/zinc/common v0.0.0 => ../common
 ## explicit; go 1.24.2
+github.com/crispuscrew/zinc/common/domain/nftrules
 github.com/crispuscrew/zinc/common/domain/schema
 github.com/crispuscrew/zinc/common/domain/schema/inherit
 github.com/crispuscrew/zinc/common/domain/schema/validate

@@ -1,10 +1,6 @@
-// Package store reads app definitions from the shared config directory
-// (~/.config/zinc/apps) - the same <name>.yaml files zc writes and zcr runs. The
-// launcher only ever reads: it lists the defined apps and loads them for display, then
-// hands the chosen app to zcr to run. There is no write side here.
-//
-// It decodes the exact same layout as the other tools (the shared schema in common plus
-// a KnownFields YAML codec), so a file zc wrote is one zlt lists verbatim.
+// Package store reads app definitions from ~/.config/zinc/apps - the same files zc writes and zcr
+// runs. Read-only: the launcher lists apps and hands the chosen one to zcr. Same schema and the same
+// KnownFields codec as the other tools.
 package store
 
 import (
@@ -80,13 +76,9 @@ func (sto *Store) Path(name string) string {
 	return filepath.Join(sto.Root, name+".yaml")
 }
 
-// safeName rejects a name that is not a plain store key - one with a path separator, or the
-// "." / ".." traversal segments - so a name from the CLI cannot read a file outside the apps
-// directory. The separator check is what does the real work: filepath.Base strips every
-// directory component, so any name that survives it is a single path segment. It is deliberately
-// a segment comparison and not a `strings.Contains(name, "..")` substring test, which also
-// rejected ordinary names that merely contain two dots (an app called "my..app"), leaving it
-// listed by the picker but impossible to load.
+// safeName rejects a name carrying a path separator or a "." / ".." segment, so a name from the CLI
+// cannot read outside the apps directory. A segment comparison rather than a substring test, which
+// would also reject an ordinary name like "my..app" and leave it listed but unloadable.
 func safeName(name string) error {
 	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
 		return fmt.Errorf("store: invalid app name %q", name)
@@ -157,11 +149,8 @@ func (sto *Store) LoadResolved(name string) (schema.AppConfig, error) {
 	if derr != nil {
 		return schema.AppConfig{}, derr
 	}
-	// An app must not be able to resolve into another app's identity. A child that omits
-	// AppNameID inherits its base's, and AppNameID is what the runner names the container,
-	// the pod and the derived image after - so `zcr run notes` would build, and `zcr stop
-	// notes` would destroy, whatever `browser` is. Inheriting apps are hand-written (Save
-	// refuses to rewrite one), so nothing else keeps the filename and the name in step.
+	// An app must not be able to resolve into another app's identity: a child omitting AppNameID inherits
+	// its base's, and that is what names the container, the pod and the derived image.
 	if resolved.AppNameID != name {
 		return schema.AppConfig{}, fmt.Errorf("config: %s: resolves to AppNameID %q - an app must keep its own name; state AppNameID in the app rather than taking the base's", name, resolved.AppNameID)
 	}

@@ -6,8 +6,8 @@
 // nothing is imported from the tools under test.
 //
 // Run with `make e2e` (which sets the build tag and a generous timeout). Requires podman;
-// the test skips if it is absent. The heavy lifting (build the binaries and helper images
-// if missing) happens in setup, so the test is self-contained.
+// the test skips if it is absent. Setup builds the binaries and helper images, so the test is
+// self-contained.
 package e2e
 
 import (
@@ -20,10 +20,7 @@ import (
 	"time"
 )
 
-const (
-	appImage = "localhost/zinc/e2e-app:local"
-	nftImage = "zinc/netfilter:local"
-)
+const appImage = "localhost/zinc/e2e-app:local"
 
 // tool runs a command, returning combined output and any error. The whole harness is
 // this one primitive - no shell, no quoting, real errors.
@@ -58,17 +55,21 @@ func TestE2E(t *testing.T) {
 	zc := filepath.Join(creator, "bin", "zc")
 	zcr := filepath.Join(runner, "bin", "zcr")
 
-	// Build what's missing: the two binaries, the nft helper image, and the test app image.
-	if _, err := os.Stat(zc); err != nil {
-		must(t, "make", "-C", creator, "build")
+	// Rebuilt every run rather than only when missing. This is a release gate, and a binary or
+	// helper image left over from an earlier commit passes or fails for reasons that have nothing
+	// to do with the tree under test. Both builds are podman layer-cached, so an unchanged tree
+	// costs little. Existence checks used to stand here, and a stale zcr passed this suite while
+	// the tree it claimed to test could not have.
+	for _, module := range []string{creator, runner} {
+		must(t, "make", "-C", module, "build")
 	}
-	if _, err := os.Stat(zcr); err != nil {
-		must(t, "make", "-C", runner, "build")
-	}
-	if _, err := tool("podman", "image", "exists", nftImage); err != nil {
-		must(t, "make", "-C", runner, "netfilter-image")
-	}
+	must(t, "make", "-C", runner, "netfilter-image")
 	must(t, "podman", "build", "-t", appImage, here)
+	for _, binary := range []string{zc, zcr} {
+		if _, err := os.Stat(binary); err != nil {
+			t.Fatalf("%s was not built: %v", binary, err)
+		}
+	}
 
 	// Isolate the store and running state; zc delegates runtime actions to zcr on $PATH.
 	cfg := t.TempDir()
@@ -76,7 +77,7 @@ func TestE2E(t *testing.T) {
 	if err := os.MkdirAll(apps, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"sleeper", "producer", "consumer", "capped", "slowdep", "waiter"} {
+	for _, name := range []string{"sleeper", "producer", "consumer", "capped", "slowdep", "waiter", "scratch"} {
 		data, err := os.ReadFile(filepath.Join(here, "apps", name+".yaml"))
 		if err != nil {
 			t.Fatal(err)
@@ -290,6 +291,42 @@ func TestE2E(t *testing.T) {
 		}
 	})
 
+	t.Run("scratch_volumes", func(t *testing.T) {
+		// A Volume with no host path produced no podman argument at all until 0.10.0, so
+		// SizeLimited and SizeLimitMiB were validated and did nothing. The runtime's unit
+		// tests prove the --mount is emitted; only the kernel can say the ceiling holds, so
+		// the app reports its own mount back through the logs the way capped.sh does.
+		must(t, zc, "run", "scratch", "--exec")
+		if !waitFor(func() bool { return running("scratch") }) {
+			t.Fatal("scratch should be running after `zc run --exec`")
+		}
+		defer func() { _, _ = tool(zc, "stop", "scratch") }()
+
+		var out string
+		waitFor(func() bool {
+			out, _ = tool(zc, "logs", "scratch")
+			return strings.Contains(out, "scratch up")
+		})
+		t.Logf("scratch reported:\n%s", out)
+
+		for _, want := range []string{
+			"SCRATCH_FS=tmpfs", // scratch space, not a host path
+			"SCRATCH_MB=8",     // SizeLimitMiB reached the kernel
+			"WROTE_MB=8",       // and it bites: 32 MiB in, 8 MiB written
+			"READONLY=refused", // Writable defaults off, as a bind mount's does
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("expected %q in the app's report of the volume it was given", want)
+			}
+		}
+		// nosuid and nodev always: scratch space is never a place to gain privilege.
+		for _, want := range []string{"nosuid", "nodev", "noexec"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the scratch mount should carry %q: %s", want, out)
+			}
+		}
+	})
+
 	t.Run("dbus", func(t *testing.T) {
 		// Needs two things this suite cannot create: a real session bus to proxy, and the
 		// helper image carrying xdg-dbus-proxy (the proxy runs --pull never, by design). A
@@ -303,8 +340,8 @@ func TestE2E(t *testing.T) {
 		if _, err := os.Stat(busPath); err != nil {
 			t.Skipf("no session bus at %s; skipping the session-bus scenario", busPath)
 		}
-		if _, err := tool("podman", "image", "exists", "zinc/netfilter:local"); err != nil {
-			t.Skip("zinc/netfilter:local absent (make -C container/runner netfilter-image); skipping the session-bus scenario")
+		if _, err := tool("podman", "image", "exists", "localhost/zinc/netfilter:local"); err != nil {
+			t.Skip("localhost/zinc/netfilter:local absent (make -C container/runner netfilter-image); skipping the session-bus scenario")
 		}
 
 		must(t, zc, "new", "busapp", "--image", appImage,

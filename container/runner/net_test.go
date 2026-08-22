@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/crispuscrew/zinc/container/runner/adapters/netenforce"
+	"github.com/crispuscrew/zinc/common/domain/nftrules"
 	"github.com/crispuscrew/zinc/container/runner/domain/paths"
 )
 
@@ -120,7 +120,7 @@ func TestPrintReport_SaysWhatACounterMeans(t *testing.T) {
 			netEntry: netEntry{Address: "firefox@work", App: "firefox", Instance: "work",
 				Posture: postureFiltered, Netns: "firefox.work-pod"},
 			Note: countersNote,
-			Counters: []netenforce.RuleCounter{
+			Counters: []nftrules.RuleCounter{
 				{Chain: "output", Verdict: "accept", Label: "list[0] ip tcp", Packets: 3, Bytes: 180},
 				{Chain: "output", Verdict: "drop", Label: "default policy", Packets: 9, Bytes: 652},
 			},

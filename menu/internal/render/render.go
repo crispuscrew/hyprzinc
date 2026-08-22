@@ -433,7 +433,6 @@ func rowForItem(rows []displayRow, item int) int {
 	return 0
 }
 
-// anyGroup reports whether any visible item carries a group.
 func anyGroup(visible []picker.App) bool {
 	for _, app := range visible {
 		if app.Group != "" {

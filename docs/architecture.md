@@ -68,7 +68,7 @@ There is no daemon, no host firewall change, and no persistent background servic
 
 ## 3. App Config (YAML)
 
-One YAML file per app: `~/.config/zinc/apps/<name>.yaml`. The format is **schema version 2**.
+One YAML file per app: `~/.config/zinc/apps/<name>.yaml`. The format is **schema version 3**.
 The same file is validated identically at author time (in `zc`, on save) and at launch time
 (in `zcr`, before anything runs), because the validation is pure and shared - so a manual
 edit or drift cannot slip an invalid config past launch.
@@ -117,7 +117,8 @@ ImageMeta:
 
 DisplayMeta:
   DisableSecurityContext: false  # false = the app gets its own wp_security_context_v1 socket (5.2)
-  DisableGpuAccess: true         # true = no /dev/dri (default off; GPU weakens isolation, 5.4)
+  RequireSecurityContext: false  # true = refuse to launch rather than fall back to the raw socket
+  DisableGpuAccess: true         # true = no /dev/dri (GPU is granted unless this is set, 5.4)
 
 NetworkMeta:
   DNSServers: []                 # resolvers the app may use, and the only ones it may reach
@@ -127,29 +128,42 @@ NetworkMeta:
     #   Domains                  # resolved AT LAUNCH into addresses; a snapshot, not name
     #                            # filtering, and not refreshed while the app runs (6.2)
 
-NotificationMeta:                # NOT implemented - a non-default value is refused, not ignored
-  Disabled: false
-  Silenced: false
+NotificationMeta:                # needs DBusMeta.Talk to reach org.freedesktop.Notifications
+  Disabled: false                # true = the call is refused, and the app is told
+  Silenced: false                # true = accepted and dropped; the app sees success
   UseCustomPrefix: false
-  CustomPrefix: ""
-  AllowedActions: false
-  AllowedProlonged: false
-  AllowedLinks: false
+  CustomPrefix: ""               # prepended to every summary
+  AllowedActions: false          # false = the action buttons are stripped
+  AllowedProlonged: false        # false = expire_timeout is clamped to 10s
+  AllowedLinks: false            # false = anchor markup is stripped from the body
 
-Configs: []                      # bundle-relative config mounts; DEFERRED (not wired yet)
+Env:                             # the app's environment; Zinc's own variables are refused
+  LANG: en_US.UTF-8
+ReadOnlyRootfs: false            # true = --read-only (podman keeps /tmp, /run, /dev writable)
+
+Configs:                         # files the app ships with, from apps/<app>/configs/
+  - BundlePath: settings.json    # relative to the bundle; absolute is a Volume, not this
+    InnerMount: /etc/app/settings.json
+    Writable: false              # read-only by default
 Volumes: []                      # explicit host bind mounts are wired; see below
 Keys: []                         # SSH/GPG convenience mounts; see below
 HostTheme: true                  # mount the curated host theme bundle read-only (5.6)
-AudioMeta:
-  Pipewire: false                # pass the Pipewire socket in
-  LegacyALSA: false              # mount /dev/snd for ALSA-only apps (rare)
+AudioMeta:                       # one grant per capability; absent means none
+  Playback: default              # none | default | a list of /dev/snd nodes
+  Microphone: none               # same three forms
+  Monitor: none                  # record what OTHER apps play; none | default only
 Capabilities: []                 # extra `--cap-add` entries, on top of the drop-all baseline
 ```
 
-**Volumes.** Each `Volume` is explicit; there is no implicit home access. The runner wires
-only **explicit host bind mounts** today (`HostMounted: true` with a `HostMount` path): it
-maps `HostMount:InnerMount` with `ro`/`rw` from `Writable` and `noexec`/`exec` from
-`Executable`. Anonymous and `SizeLimited` volumes are schema-defined but not wired yet.
+**Volumes.** Each `Volume` is explicit; there is no implicit home access. A volume with
+`HostMounted: true` and a `HostMount` path is a bind mount: `HostMount:InnerMount`, with
+`ro`/`rw` from `Writable` and `noexec`/`exec` from `Executable`.
+
+A volume with no host path is scratch space rather than a location on the host, and is
+mounted as a tmpfs at `InnerMount`, always `nosuid,nodev`, with the same `Writable` and
+`Executable` defaults. `SizeLimited` with `SizeLimitMiB` becomes `tmpfs-size`, so the ceiling
+is held by the kernel: a container writing past it gets ENOSPC. Left off, the size is
+podman's default of half the host's RAM.
 
 A bind mount can also be added for a single run without editing the app file, via a
 repeatable `-v`/`--volume` flag on `zcr run`:
@@ -180,13 +194,18 @@ Keys:
 **Wired at runtime in 0.1:** identity/image, the network attach and lock-down, the
 capability drop-all baseline plus `Capabilities`, the Wayland socket (its own, under a
 security context, where the compositor implements one - 5.2),
-GPU device, the theme bundle, audio (Pipewire socket / `/dev/snd`), explicit host bind
+GPU device, the theme bundle, audio (the PipeWire socket, or named `/dev/snd` nodes), explicit host bind
 mounts, SSH/GPG key mounts, the entrypoint override, and the terminal / multiterminal /
 background / keep-alive lifecycle. `ResourcesMeta` (`--cpus`, `--memory`, `--memory-swap`, `--pids-limit`) and
-`InternalUserMeta` (`--user`, `--userns=keep-id`) are enforced now. **Schema-defined
-and not wired into the launch:** `NotificationMeta` and `Configs`. `NotificationMeta` is
-refused rather than ignored - Zinc has no notification path, so accepting `Silenced` would
-tell an author their app is muted while it notifies freely.
+`InternalUserMeta` (`--user`, `--userns=keep-id`) are enforced now, and so is
+`NotificationMeta` (see below). **Every field in the schema is wired into the launch.**
+
+`Configs` was the one exception to that rule until schema v3: it validated, expanded
+placeholders, was counted by `zc` and refused for VM apps, and then produced no mount, so an
+app started without its file and nothing said why. It is wired now, and it has its own type
+rather than borrowing `Volume` - which mattered because the borrowed `HostMount` carried the
+opposite rule in each list (a Volume's must be absolute, a Config's must not be) while
+`HostMounted`, `SizeLimited` and `SizeLimitMiB` could never apply to a single file at all.
 
 ---
 
@@ -359,6 +378,15 @@ protocols it is denied is unaffected by any of it. **The real isolation boundary
 container is still the container itself** (5.1); for genuinely untrusted GUI apps the stronger
 answer is a VM (section 10).
 
+**Requiring it.** The fallback above is a real downgrade: the app becomes a client the
+compositor cannot tell apart from an unsandboxed one, and the container is labelled
+`zinc.wayland=passthrough` to record that. `DisplayMeta.RequireSecurityContext: true` refuses
+the launch instead, naming the compositor as the reason. It exists for the app whose whole
+reason for being sandboxed is that it is untrusted, where running it unlabelled is worse than
+not running it. The default stays permissive because most compositors still lack the protocol
+and a desktop that refused to start anything would not be one anyone runs. Setting it together
+with `DisableSecurityContext` is refused rather than resolved: they are opposites.
+
 ### 5.3 Network isolation (per-app netns, fail-closed)
 
 **Strong, and the crown jewel of the security model.** An app's `NetworkMeta.NetworkLists`
@@ -421,10 +449,47 @@ is meant to. The output says so in both forms rather than leaving it to be assum
 
 ### 5.4 GPU passthrough
 
-**Weak isolation when enabled.** Granting `/dev/dri` (via `DisplayMeta.DisableGpuAccess:
-false`) exposes GPU rendering state more broadly than process boundaries suggest, and Linux
-GPU sandboxing is immature. GPU access is **off by default**. Rule: never enable it for
-untrusted code.
+**Weak isolation when enabled.** Granting `/dev/dri` exposes GPU rendering state more
+broadly than process boundaries suggest, and Linux GPU sandboxing is immature.
+
+**GPU access is ON unless a config opts out** with `DisplayMeta.DisableGpuAccess: true`. An
+app that says nothing about the display receives `/dev/dri`. This section claimed the
+opposite until the schema v3 release; the code was always the authority and the text was wrong.
+
+This is a deliberate exception, and the only grant in the schema whose zero value is the
+permissive one. Every other grant defaults closed: no `NetworkLists` means `--network none`,
+an empty `DBusMeta` means no bus at all, no `Capabilities` means `--cap-drop all`. GPU access
+is opt-out because almost every graphical app needs it and a desktop whose apps render on the
+CPU by default is not one anyone would run. The cost is that a reviewer scanning a config for
+what it was granted will not find this one written down anywhere.
+
+Rule: set `DisableGpuAccess: true` for anything that does not render, and never leave it on
+for untrusted code.
+
+**There is no VRAM limit, and this is why.** GPU memory is the one resource `ResourcesMeta`
+cannot bound: an app granted `/dev/dri` can allocate until the device is exhausted, which is a
+denial of service against the whole desktop rather than against itself. The mechanism that
+would fix this is the kernel's `dmem` cgroup controller (Linux 6.14+), which accounts device
+memory per cgroup and is exactly the right granularity. It is not usable yet:
+
+- The controller has to be present AND the DRM driver has to register regions for it. On the
+  development box here `dmem` appears in `cgroup.controllers`, and `dmem.capacity` is empty
+  with no `dmem.max`, because the driver registers nothing. Most drivers still do not.
+- Podman can set unified cgroup values with `--cgroup-conf`, so the plumbing on Zinc's side is
+  small once regions exist.
+
+So a `VramLimitMiB` field would read as a cap and do nothing on nearly every machine, which is
+the failure this project refuses elsewhere. Deferred deliberately, to be added when the
+controller is usable: it would be additive, with no schema bump, since absent means unlimited.
+
+The VM side has two numbers that look like VRAM and are not. `hostmem` on `virtio-gpu-gl-pci`
+is the address-space window venus shares blob resources through, and reserves address space
+rather than committing memory; `vgamem` on `bochs-display` is emulated VGA memory sized from
+the requested resolution, so exposing it would mainly let a config contradict its own
+`DisplayWidth`/`DisplayHeight`. Neither is a memory cap, and neither is worth a field.
+
+Until then the containment answer is the blunt one: deny the GPU to anything that does not
+need it.
 
 ### 5.5 Image trust (digest pinning + derived images)
 
@@ -546,6 +611,58 @@ putting a D-Bus client (a protocol implementation, an auth handshake, a dependen
 sandbox runtime would buy no isolation.
 
 ---
+
+### 5.9 Audio
+
+`AudioMeta` grants sound one direction at a time. Each direction takes one of three forms,
+and they are spelled differently because they are enforced differently:
+
+| Form | Means | Enforced by |
+|---|---|---|
+| `none`, or absent | not granted | nothing to enforce |
+| `default` | the session's own device, via the PipeWire socket | see below |
+| `[/dev/snd/...]` | exactly these ALSA nodes | the kernel, through `--device` |
+
+There are three capabilities, not two. `Playback` and `Microphone` are the obvious pair.
+`Monitor` is the third: a PipeWire sink carries a `.monitor` source, a readable tap on
+everything mixed into it, so a client on the session socket can record **what other apps are
+playing**. That is what a screen recorder uses, and it crosses the boundary between two
+sandboxed apps rather than between an app and a host device, since a music player and a video
+call share a sink.
+
+`Monitor` takes only `none` or `default`: a monitor source is part of PipeWire's graph and no
+`/dev/snd` node carries one, so a device list there would look like a narrowing while doing
+nothing, and is refused. It is also refused for a VM app, whose guest sees an emulated sound
+card rather than the host graph.
+
+Note what `Monitor` is not: it is a capability on the app doing the recording, never a
+protection on the app being recorded. Zinc describes what an app may do, so there is no way
+for a music player to declare its own output private - whether anything taps its sink is
+decided by the other app's grant, in the other app's config.
+
+**The device-list form is the strong one.** Those nodes are passed with `--device` and
+nothing else on the sound subsystem is reachable, so an app granted one microphone cannot
+open a second card. Naming a capture stream usually means naming two nodes, the card's
+control node and its PCM: `/dev/snd/controlC0` and `/dev/snd/pcmC0D0c`.
+
+**`default` is not yet enforcement on a container.** It mounts the session's PipeWire socket,
+and PipeWire grants a client on that socket both directions plus the monitor sources that
+record what other applications are playing. So `Playback: default` with `Microphone: none`
+states something the runtime cannot currently hold the app to, and `zc` says so at authoring
+time. Closing it means Zinc speaking PipeWire's security context (`pw_security_context_create`,
+present since PipeWire 1.0) the way it already speaks Wayland's, creating a restricted
+per-instance socket instead of handing over the session one. Until then, an app that must not
+be able to listen should name its devices rather than take the default.
+
+**On a VM, `default` IS enforced.** The guest is given an `hda-output` codec, which has no
+capture stream, unless a microphone was granted, in which case it gets `hda-duplex`. There is
+no capture endpoint for the guest to open. A device list is refused for a VM app, because a
+guest cannot be handed a host character device.
+
+Before schema v3 this was one flag, `Pipewire: true`, which mounted the socket and therefore
+granted listening to every app that wanted to make a sound. The split exists so a config can
+state the narrower thing, and so the gap between what it states and what is enforced is
+visible rather than silent.
 
 ## 6. Networking model and startup ordering
 
@@ -812,8 +929,35 @@ never silently mis-enforced. Rejected in this build:
 - **An ingress list that targets an `AppName`** - contradictory (a producer publishes to any
   sibling that joins its link; the consumer names the producer).
 
-Also deferred at the mount layer: bundle-relative `Configs` mounts and anonymous/size-limited
-volumes; only explicit host bind mounts are wired (section 3).
+`Configs` are mounted from the app's own bundle at
+`$XDG_CONFIG_HOME/zinc/apps/<app>/configs/<BundlePath>`, read-only unless `Writable` says
+otherwise. Per app rather than per instance: a config file is content the app was authored
+with, so every instance reads the same one, and per-instance content is runtime state under
+the state directory instead.
+
+**Notifications.** `NotificationMeta` is enforced by a filter that stands between the app and
+its D-Bus proxy, so the chain becomes app -> filter -> `xdg-dbus-proxy` -> session bus. It
+exists because the proxy filters by NAME: whether an app may reach
+`org.freedesktop.Notifications` is a question `xdg-dbus-proxy` answers, and what an app may put
+IN a notification is a question about a message body.
+
+The filter reads only `Notify` calls and forwards everything else as the bytes it arrived as,
+file descriptors included - the same connection carries the app's portal traffic, and a relay
+that re-encoded or dropped that would break file dialogs and screen sharing. `Disabled` is
+answered with `AccessDenied`, so the app is told; `Silenced` is answered with a plausible
+notification id, so the app cannot tell its notification went nowhere. `UseCustomPrefix`
+rewrites the summary, `AllowedActions` drops the action list, `AllowedLinks` strips anchor
+markup from the body, and `AllowedProlonged` clamps an expire timeout to ten seconds - a
+notification that never expires owns a corner of the screen, which is a thing to grant.
+
+A `Notify` call is decoded and re-encoded rather than patched, because D-Bus alignment is
+measured from the start of the message: changing the length of the summary moves the padding
+inside the hints dictionary that follows it. A zero `NotificationMeta` keeps the filter out of
+the launch entirely, and validation refuses the block on an app whose `DBusMeta` cannot reach
+the notification service, since a policy over traffic that cannot happen is not a policy.
+
+A guest's network is section 10.5: the model is the same, but what carries it is
+qemu and pasta rather than a pod.
 
 ### 6.6 Dependency startup ordering
 
@@ -1120,9 +1264,10 @@ managed save, which `zvr` does not have.
 ### 10.2 How a guest runs
 
 A launch is: validate the config, verify the base image against its pinned digest, create
-the app's overlay if it has none, rebuild its cloud-init seed, compose the argv, start the
-process. Nothing is created for a config that does not validate, and no guest starts from a
-base image that no longer matches its digest.
+the app's overlay if it has none, rebuild its cloud-init seed, compose the argv, wrap it in a
+filtered network namespace if the app declares one (10.5), start the process. Nothing is
+created for a config that does not validate, and no guest starts from a base image that no
+longer matches its digest.
 
 **Disks are copy-on-write.** The base image named by `ImageMeta.Image` is never opened for
 writing; each app gets its own qcow2 overlay backed by it, so `zvr reset` deletes the overlay
@@ -1141,6 +1286,12 @@ because they can rewrite the cache alongside it.
 so a graceful stop lets the guest's own OS flush and unmount rather than being killed
 mid-write; SIGTERM and then SIGKILL stand behind it. A pidfile is checked against `/proc`
 before anything is signalled, because pids are recycled.
+
+The pid in that file is written by `zvr`, not by qemu, and for a filtered guest the difference
+is the whole thing: pasta's namespace is a PID namespace too, so qemu is pid 1 inside it and
+`-pidfile` records `1` - which on the host is init. The usable pid is found from the host side
+and stored instead. Signalling what qemu wrote meant signalling nothing, and every stop left a
+pasta and a qemu behind.
 
 **The guest's hardware is exactly what the config asked for.** qemu is started with
 `-nodefaults`, so nothing arrives merely because it was compiled in, and the host process is
@@ -1236,6 +1387,55 @@ The install seeds its machine identity from the disk's own path, because it has 
 yet and a shared placeholder would give every install on every host the same identity at the
 one moment it matters most.
 
+### 10.5 The guest's network
+
+A VM app declaring `NetworkLists` gets the same fail-closed egress a container does. qemu runs
+inside a network namespace made by `pasta --config-net`, which gives it working connectivity and
+uid 0 of a user namespace, so the ruleset loads with no privilege on the host. The ordering is the
+guarantee: nft loads, and only then does qemu exec, so a guest never exists on an unfiltered
+network - the same window `pod create` closes for a container.
+
+The rules come from `common/domain/nftrules`, shared so that what a `NetworkList` MEANS cannot
+differ between the two runtimes.
+
+**The loopback hole, and what actually closes it.** pasta splices a namespace's loopback to the
+host's, so a guest that could reach `127.0.0.1` would reach every service the person running it
+has bound there. What closes that is the **input** chain's default drop, not the absence of a
+loopback accept on egress: the splice works by pasta accepting the connection inside the
+namespace. Measured three ways - a bare pasta namespace reaches a host loopback service, this
+ruleset does not, and adding one `tcp dport <p> accept` to the input chain reaches it again.
+Every accept in that chain is therefore loopback exposure on its port, which is why the only ones
+are the published ports, and pasta itself binds those on the host.
+
+**Forwards.** `ForwardPorts` is published by pasta rather than by qemu's `hostfwd`. A forward is
+delivered to the namespace's interface address, so the guest's `hostfwd` binds every address of
+the namespace rather than its loopback, where nothing arrives. That is narrower than it reads:
+the only way in is a port pasta was told to forward, verified by an undeclared port staying
+unreachable from the host.
+
+**DNS is delivered, not only enforced.** qemu's user-mode networking takes its upstream resolver
+from `/etc/resolv.conf`, so a guest whose lists are allowances would ask the host's resolver and
+have its own rules drop the query - it resolved nothing. The namespace gets a resolv.conf naming
+the declared servers, bind-mounted before qemu execs: no cooperation from the guest, so it works
+for one with no cloud-init, and pasta's mount namespace does not propagate. `zc` warns when a
+guest's lists are allowances and no resolver is named.
+
+**Reading it back.** `zvr net <app>` reports what the ruleset has counted, as `zcr net` does for a
+container, and the parser is shared with it. Posture is observed from the namespace the guest is
+actually in rather than from its config, for the same reason `zcr net` reads pod membership: an
+edited YAML must not change what is reported about a guest already running.
+
+**What a guest does not get.** Only self-scoped egress. Sibling links, routing through a gateway,
+forwarding and by-name allowances are refused at validation rather than half-applied, because a
+guest has no siblings and no pod to link to. A guest that declares no lists at all is
+*unfiltered* - it keeps qemu's user-mode NAT and reaches whatever the host can. That is the
+opposite of a container with no lists, which gets `--network none` and is the most restricted
+posture there is; `zvr net` says which of the two a running guest is in, in those words.
+
+**What is not supervised.** Nothing watches a guest, so one shut down from inside leaves its swtpm
+running, and `zvr` has no launch lock of the kind `zcr` uses to serialise a relaunch. Both are the
+guest-side twins of container fixes, recorded rather than implied to work.
+
 ## 11. Host Surface (minimal)
 
 Zinc adds almost nothing to the host. The moving parts:
@@ -1246,7 +1446,7 @@ Zinc adds almost nothing to the host. The moving parts:
 | A terminal emulator | drops into terminal/multiterminal apps on explicit launch |
 | `zc` / `zcr` | two static binaries on `$PATH` - author and run apps |
 | Rootless Podman + pasta | the container runtime and userspace networking |
-| Pipewire (optional) | audio; the socket is passed in only on explicit grant |
+| Pipewire (optional) | audio; the socket is passed in only on explicit grant, and it grants BOTH directions regardless of which the config asked for (see 5.9) |
 
 Everything else runs inside containers. The host-side values a launch needs (Wayland and
 runtime sockets, the theme bundle, the terminal emulator, the netfilter image) are resolved
@@ -1283,7 +1483,7 @@ zinc/
   tool.mk                binary targets (build/run/repro); each tool's Makefile includes it
   go.work                ties the modules together for local dev only (the build never uses it)
   common/                shared library - schema, validation, inheritance, wg config (pure)
-    domain/schema/                    schema.go (AppConfig, schema version 2)
+    domain/schema/                    schema.go (AppConfig, schema version 3)
     domain/schema/validate/           the hard rules + create-time warnings
     examples/apps/                    sample app YAMLs
   creator/               zc - the creator for BOTH app kinds (CLI + Bubbletea TUI)
@@ -1359,13 +1559,14 @@ the network lock-down applies rules with (6.4).
 | # | Issue | Mitigation |
 |---|-------|------------|
 | 1 | Zinc supplies the security-context identity; what a tagged client is allowed to do is the compositor's policy, and a compositor without the protocol gets the raw socket and a warning | the container boundary is the real wall (5.1); a VM (section 10) is the stronger boundary for untrusted GUI apps |
-| 2 | GPU passthrough weakens isolation | off by default; never enable for untrusted images (5.4) |
+| 2 | GPU passthrough weakens isolation, is granted unless a config opts out, and has no memory cap (see 5.4 on `dmem`) | `DisableGpuAccess: true` denies it; opt-out is deliberate, and it is the one grant not written into a config when it applies (5.4) |
 | 3 | Image tags can be poisoned upstream | third-party images must be digest-pinned; launch is `--pull never` (5.5) |
 | 4 | Derived images are per-machine, not digest-pinned | their guarantee is the pinned base plus the visible install lines (7) |
-| 5 | Some schema fields are validated but not yet enforced at runtime (config mounts). Resources and internal user are enforced; notifications are refused outright rather than ignored | called out explicitly in section 3; on the roadmap, fail-loud where relevant |
+| 5 | Every schema field is enforced by something as of 0.10.0; what remains unenforced is named, not silent | the exceptions are listed in the changelog's Still open, and validation says so at authoring time |
 | 6 | Host-scoped egress, gateway/multi-homing, and mixing a sibling link with other networking are unsupported | fail-closed: rejected at launch, never mis-enforced (6.5) |
 | 7 | The netfilter helper runs with namespaced `CAP_NET_ADMIN` | namespaced to the pod's userns, harmless on the host; the image is local and `--pull never` (6.4) |
-| 8 | VM apps have no egress filtering, only explicit port forwards | the nftables model lives in a container netns and does not reach a guest; rejected rather than mis-enforced (10) |
+| 8 | A guest's egress covers self-scoped lists only; sibling links, gateways and by-name allowances do not reach it | fail-closed: refused at validation rather than half-applied (10.5) |
+| 9 | Nothing supervises a guest: one shut down from inside leaves its swtpm running, and `zvr` has no launch lock | `zvr stop` tears down correctly; the gap is a guest that exits on its own (10.5) |
 
 ---
 

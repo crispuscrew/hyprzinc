@@ -96,10 +96,12 @@ for one app, so "is this rule doing anything" has an answer. `zcr bus` maps a co
 the host session bus to the `app@instance` behind it, using the mapping Zinc holds by
 construction rather than anything the app asserts. Both have a `--json` form.
 
-This is the container network model. A **VM app** does not get it - nftables in a container's
-own network namespace does not reach a guest kernel - so rather than mis-enforce it, a guest
-runs on user-mode networking with explicit port forwards bound to loopback, and
-`NetworkMeta` on a VM app is a validation error.
+A **VM app** gets the same model, carried differently: qemu runs inside a network namespace made
+by `pasta`, with the ruleset loaded before it execs, so a guest never exists on an unfiltered
+network either. The rules are rendered by the same code, and `zvr net` reads its counters back.
+Only self-scoped egress reaches a guest - sibling links and gateways are refused rather than
+half-applied - and a guest that declares no lists keeps qemu's user-mode NAT, which for a guest
+is the weaker posture rather than the stronger one.
 
 ## Install
 

@@ -36,7 +36,6 @@ func splitLeadingArg(argv []string) (string, []string, error) {
 	return argv[0], argv[1:], nil
 }
 
-// cmdCompose dispatches the compose subcommands (section 9.1).
 func cmdCompose(svc backend.Service, argv []string) error {
 	if len(argv) < 1 {
 		return fmt.Errorf("%s", composeUsage)
