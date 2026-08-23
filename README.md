@@ -12,6 +12,7 @@ home-manager flake, and developed in its own repository.
 **Priority order: Stable, then Secure, then Beautiful.**
 
 - Architecture: [`docs/architecture.md`](docs/architecture.md)
+- Quick start: [`docs/quickstart.md`](docs/quickstart.md)
 - Roadmap: [`ROADMAP.md`](ROADMAP.md) and releases: [`RELEASES.md`](RELEASES.md)
 - Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
@@ -46,7 +47,7 @@ builds on).
 
 ## Status
 
-**0.9 - an attestable sandbox.** Both runtimes work: containers since 0.1, VMs
+**0.10 - every schema field is enforced.** Both runtimes work: containers since 0.1, VMs
 since 0.4 (with guest GPU in 0.5 and Windows-class guests in 0.6). Common to both: the
 app-config schema and validation (including the rule that third-party images must be
 digest-pinned), config inheritance, a YAML config store under `~/.config/zinc/apps`, and a

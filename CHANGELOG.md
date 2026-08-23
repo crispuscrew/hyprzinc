@@ -7,6 +7,18 @@ tracked in [RELEASES.md](RELEASES.md).
 
 ## [Unreleased]
 
+### Added
+
+- GitHub releases now contain verified Linux AMD64 builds of all five Zinc tools, with checksums
+  over the exact downloadable filenames and a quick-start path for an existing Podman system.
+- `zc init` now completes successfully: its instanced example no longer contains the unresolved
+  `{state}` mount that validation correctly refused before writing the full seed set. The three
+  terminal-only examples also deny unnecessary GPU access.
+
+### Changed
+
+- GitHub's checkout and Go setup actions are pinned to Node.js 24 releases.
+
 ## [0.10.0] - 2026-08-21
 
 Schema v3, and the release where every field in the schema is enforced by something. Three

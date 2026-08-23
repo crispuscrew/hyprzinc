@@ -23,11 +23,11 @@ jobs:
     name: common (schema + validate)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node.js 24
       # Through the pinned container like every other module, not a host Go. `common` is a
-      # library, not an e2e suite, so it gets no exception from golden rule 1: a floating
-      # setup-go resolves to whatever 1.24.x is newest at job time, which is the version
-      # skew GOTOOLCHAIN=local and the digest pin exist to prevent.
+      # library, not an e2e suite, so it gets no exception from golden rule 1.
+      - name: Check release asset packaging
+        run: sh .github/scripts/package-release-assets_test.sh
       - run: .github/scripts/ensure-podman.sh
       - run: make -C common check
       # common vendors yaml.v3, so it can drift like any other module - and `check` would
@@ -42,7 +42,7 @@ jobs:
       matrix:
         module: [container/runner, creator, launcher/tui, launcher/gui, virtualization/runner]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node.js 24
       - name: Ensure podman
         run: .github/scripts/ensure-podman.sh
       - name: make check
@@ -58,7 +58,7 @@ jobs:
     name: launcher/common (shared launcher lib)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node.js 24
       - name: Ensure podman
         run: .github/scripts/ensure-podman.sh
       - name: make check
@@ -70,7 +70,7 @@ jobs:
     name: menu (menu lib)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node.js 24
       - name: Ensure podman
         run: .github/scripts/ensure-podman.sh
       - name: make check
@@ -82,7 +82,7 @@ jobs:
     name: nix flake (consumer build path)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node.js 24
       # Pinned by commit SHA rather than by tag: a tag is mutable, and this action installs a
       # package manager into the job. v31.11.0 at the time of pinning.
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342
@@ -105,7 +105,7 @@ jobs:
           got="$(nix run --print-build-logs .#zc -- version)"
           echo "zc reports: $got"
           case "$got" in
-            *v0.10.0*) ;;
+            *v0.10.1*) ;;
             *) echo "expected the flake version from 'zc version', got: $got" >&2; exit 1 ;;
           esac
 
@@ -113,8 +113,8 @@ jobs:
     name: end-to-end (podman)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node.js 24
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0, Node.js 24
         with:
           go-version: '1.24'
           cache: false # common and e2e have no external deps, so there is nothing to cache
@@ -126,19 +126,15 @@ jobs:
         #   env:
         #     ZINC_E2E_NO_NET: "1"
 
-  # Checksums are made here rather than by whoever cuts the tag, because a checksum written on
-  # the machine that built the binaries proves only that the machine agrees with itself. The
-  # builds are reproducible, so this is a number anyone can regenerate and compare - which is the
-  # whole reason it is worth publishing.
-  checksums:
-    name: release checksums
+  release:
+    name: release assets
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, e2e]
+    needs: [common, check, launcher-common, menu, nix, e2e]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node.js 24
       - name: Ensure podman
         run: .github/scripts/ensure-podman.sh
       - name: build every tool in its pinned container
@@ -146,26 +142,9 @@ jobs:
           for tool in creator container/runner virtualization/runner launcher/tui launcher/gui; do
             make -C "$tool" build
           done
-      # Sorted and relative to the repo root, so two runs on two machines produce the same file
-      # and a difference means the bytes differ rather than the listing order.
-      - name: record the bytes
-        run: |
-          printf '%s\n' \
-            creator/bin/zc \
-            container/runner/bin/zcr \
-            virtualization/runner/bin/zvr \
-            launcher/tui/bin/zlt \
-            launcher/gui/bin/zlg \
-            | LC_ALL=C sort | xargs sha256sum > SHA256SUMS
-          cat SHA256SUMS
-      # `gh` rather than a release action: it ships on the runner, so this adds no third-party
-      # dependency to the one job whose whole purpose is to be trustworthy. The release is created
-      # if the tag has none yet, so pushing a tag is enough on its own.
-      - name: publish them with the release
+      - name: package and verify Linux AMD64 assets
+        run: sh .github/scripts/package-release-assets.sh release-assets "$GITHUB_REF_NAME"
+      - name: publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="${GITHUB_REF_NAME}"
-          gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --title "$tag" --notes "See CHANGELOG.md for what is in this release."
-          gh release upload "$tag" SHA256SUMS --clobber
+        run: sh .github/scripts/publish-release-assets.sh release-assets "$GITHUB_REF_NAME"
