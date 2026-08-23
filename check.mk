@@ -85,7 +85,7 @@ vendor:
 
 ## vendor-check: fail if 'tidy + vendor' would change anything (dirty-tree safe; no-op for dep-free modules)
 vendor-check:
-	$(GO_VENDOR) sh -c 'snapshot="$$(mktemp -d)"; \
+	$(GO_VENDOR) sh -c 'set -e; snapshot="$$(mktemp -d)"; \
 		cp go.mod "$$snapshot/go.mod"; \
 		[ -f go.sum ] && cp go.sum "$$snapshot/go.sum" || true; \
 		[ -d vendor ] && cp -a vendor "$$snapshot/vendor" || true; \
