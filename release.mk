@@ -10,13 +10,13 @@
 # bytes - so anyone can rebuild and compare against what CI published.
 #
 # Usage:
-#   make -f release.mk tag VERSION=0.10.0
+#   make -f release.mk tag VERSION=X.Y.Z
 
 .PHONY: tag
 
 ## tag: create the signed, annotated tag for a release
 tag:
-	@test -n "$(VERSION)" || { echo "usage: make -f release.mk tag VERSION=0.10.0" >&2; exit 1; }
+	@test -n "$(VERSION)" || { echo "usage: make -f release.mk tag VERSION=X.Y.Z" >&2; exit 1; }
 	@git config --get user.signingkey >/dev/null 2>&1 || \
 	  { echo "no git user.signingkey configured, so this tag could not be signed." >&2; \
 	    echo "set one (git config user.signingkey <key>, and gpg.format=ssh for an ssh key)," >&2; \
