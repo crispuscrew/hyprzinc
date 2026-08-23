@@ -38,7 +38,7 @@
       # Kept in step with RELEASES.md by hand. It reaches the binary as main.version, the same
       # symbol the Makefile stamps from `git describe`, so `zc version` answers the same way
       # whichever path built it.
-      version = "0.10.0";
+      version = "0.10.1";
 
       tools = {
         zc = {

@@ -2,8 +2,11 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	creatorstore "github.com/crispuscrew/zinc/creator/internal/store"
 )
 
 const digestPin = "@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -64,6 +67,57 @@ func TestAuthoringLifecycle(t *testing.T) {
 	}
 	if err := run([]string{"validate", "demo"}); err == nil {
 		t.Fatal("validate should fail after the app is deleted")
+	}
+}
+
+func TestInitSeedsValidAppsAndPreservesExistingFiles(t *testing.T) {
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	quiet(t)
+
+	if err := run([]string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	for _, seed := range seedApps {
+		if err := run([]string{"validate", seed.name}); err != nil {
+			t.Fatalf("validate %s: %v", seed.name, err)
+		}
+		configPath := filepath.Join(configRoot, "zinc", "apps", seed.name+".yaml")
+		info, err := os.Stat(configPath)
+		if err != nil {
+			t.Fatalf("stat %s: %v", seed.name, err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode: got %o, want 600", seed.name, info.Mode().Perm())
+		}
+		cfg, err := creatorstore.Load(configPath)
+		if err != nil {
+			t.Fatalf("load %s: %v", seed.name, err)
+		}
+		if !cfg.DisplayMeta.DisableGpuAccess {
+			t.Fatalf("%s grants the GPU despite being terminal-only", seed.name)
+		}
+	}
+
+	shellPath := filepath.Join(configRoot, "zinc", "apps", "example-shell.yaml")
+	if err := os.WriteFile(shellPath, []byte("keep this file\n"), 0o600); err != nil {
+		t.Fatalf("replace fixture: %v", err)
+	}
+	if err := run([]string{"init"}); err != nil {
+		t.Fatalf("second init: %v", err)
+	}
+	preserved, err := os.ReadFile(shellPath)
+	if err != nil {
+		t.Fatalf("read preserved fixture: %v", err)
+	}
+	if string(preserved) != "keep this file\n" {
+		t.Fatalf("init replaced an existing app: %q", preserved)
+	}
+	if err := run([]string{"init", "--force"}); err != nil {
+		t.Fatalf("forced init: %v", err)
+	}
+	if err := run([]string{"validate", "example-shell"}); err != nil {
+		t.Fatalf("validate forced seed: %v", err)
 	}
 }
 
