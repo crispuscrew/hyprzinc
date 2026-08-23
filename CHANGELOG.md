@@ -7,6 +7,8 @@ tracked in [RELEASES.md](RELEASES.md).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-08-23
+
 ### Added
 
 - GitHub releases now contain verified Linux AMD64 builds of all five Zinc tools, with checksums
