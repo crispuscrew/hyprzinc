@@ -174,6 +174,8 @@ Description: A terminal in a container - the smallest thing that runs
 Group: examples
 ImageMeta:
   Image: docker.io/library/alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+DisplayMeta:
+  DisableGpuAccess: true
 StartConditions:
   Entrypoint: /bin/sh
   Terminal: true
@@ -185,6 +187,8 @@ Description: Network locked down to one destination - everything else is dropped
 Group: examples
 ImageMeta:
   Image: docker.io/library/alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+DisplayMeta:
+  DisableGpuAccess: true
 StartConditions:
   Entrypoint: /bin/sh
   Terminal: true
@@ -202,16 +206,12 @@ Description: One definition, many instances - run it as example-instanced@work
 Group: examples
 ImageMeta:
   Image: docker.io/library/alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+DisplayMeta:
+  DisableGpuAccess: true
 StartConditions:
   Entrypoint: /bin/sh
   Terminal: true
-# {state} expands to this instance's own directory. Ask zcr where it is:
-#   zcr where example-instanced@work
-Volumes:
-  - HostMounted: true
-    HostMount: "{state}/data"
-    InnerMount: /data
-    Writable: true
+# Run separate copies as example-instanced@work and example-instanced@personal.
 `},
 }
 
@@ -268,7 +268,12 @@ func cmdInit(svc backend.Service, argv []string) error {
 		fmt.Printf("kept existing: %s (use --force to replace)\n", strings.Join(skipped, ", "))
 	}
 	if len(written) > 0 {
-		fmt.Println("\ntry:  zc validate example-shell   then   zc run example-shell --exec")
+		fmt.Println()
+		fmt.Println("next:")
+		fmt.Println("  podman pull docker.io/library/alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1")
+		fmt.Println("  set ZINC_TERMINAL to your terminal command if TERMINAL is unset")
+		fmt.Println("  zc validate example-shell")
+		fmt.Println("  zc run example-shell --exec")
 	}
 	return nil
 }
